@@ -31,7 +31,9 @@ fi
 
 section "Orchestrator tests"
 if [ -f apps/orchestrator/pyproject.toml ]; then
-  (cd apps/orchestrator && uv run --frozen pytest -q) || FAILED=1
+  # --extra dev matters: pytest lives in the dev extra, and on a fresh machine
+  # (CI) `uv run --frozen` would otherwise build a venv without it.
+  (cd apps/orchestrator && uv run --frozen --extra dev pytest -q) || FAILED=1
 else
   skip "apps/orchestrator not present yet"
 fi
