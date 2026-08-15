@@ -38,6 +38,30 @@ export type ChatEvent =
   | { type: "done" }
   | { type: "error"; message: string };
 
+// One row in the merged audit ledger (orchestrator /api/audit).
+export interface AuditEvent {
+  ts: number;
+  ts_iso: string;
+  seq: number;
+  source: "session" | "a2a" | "cron" | "webhook";
+  agent_id: string;
+  kind: string;
+  session_id?: string | null;
+  session_key?: string | null;
+  role?: string | null;
+  peer_from?: string | null;
+  peer_to?: string | null;
+  text: string;
+  extra?: Record<string, unknown>;
+}
+
+export interface AuditFilters {
+  agent?: string;
+  source?: string;
+  a2a_only?: boolean;
+  q?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";

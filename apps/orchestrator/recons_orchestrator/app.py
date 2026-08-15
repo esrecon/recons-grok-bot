@@ -8,12 +8,14 @@ an operator login sits in front (Phase 4).
 
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .config import Settings
+from .ledger import Ledger
 from .models import AgentRecord, AgentSpec, AgentStatus
 from .provisioning import Provisioner, ProvisioningError
+from .webhooks import WebhookReceiver
 
 
 def get_settings() -> Settings:
@@ -26,12 +28,64 @@ def get_provisioner(settings: Settings = Depends(get_settings)) -> Provisioner:
     return Provisioner(settings)
 
 
+def get_ledger(settings: Settings = Depends(get_settings)) -> Ledger:
+    return Ledger(settings)
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Recons Grok Bot orchestrator", version="0.1.0")
+
+    # One receiver instance so the delivery-id dedupe set persists across
+    # requests. Tests override app.state.receiver with a temp-root instance.
+    app.state.receiver = WebhookReceiver(Settings())
+
+    def receiver() -> WebhookReceiver:
+        return app.state.receiver
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    # --- audit ledger ---------------------------------------------------------
+    @app.get("/api/audit")
+    def audit(
+        agent: str | None = None,
+        source: str | None = None,
+        kind: str | None = None,
+        a2a_only: bool = False,
+        q: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        limit: int = 500,
+        offset: int = 0,
+        ledger: Ledger = Depends(get_ledger),
+    ) -> dict:
+        rows = ledger.query(
+            agent=agent, source=source, kind=kind, a2a_only=a2a_only,
+            search=q, since=since, until=until, limit=limit, offset=offset,
+        )
+        return {"events": rows, "count": len(rows)}
+
+    @app.get("/api/audit/agents")
+    def audit_agents(ledger: Ledger = Depends(get_ledger)) -> dict:
+        return {"agents": ledger.agents()}
+
+    @app.get("/api/audit/export.jsonl")
+    def audit_export(ledger: Ledger = Depends(get_ledger)) -> PlainTextResponse:
+        import json
+
+        lines = "\n".join(json.dumps(e) for e in ledger.query(limit=1_000_000))
+        return PlainTextResponse(
+            lines,
+            headers={"content-disposition": "attachment; filename=audit-export.jsonl"},
+        )
+
+    # --- signed-webhook receiver (Hermes lifecycle events) --------------------
+    @app.post("/api/hooks")
+    async def hooks(request: Request) -> JSONResponse:
+        body = await request.body()
+        status, payload = receiver().handle(body, dict(request.headers))
+        return JSONResponse(status_code=status, content=payload)
 
     @app.get("/api/agents", response_model=list[AgentRecord])
     def list_agents(prov: Provisioner = Depends(get_provisioner)) -> list[AgentRecord]:

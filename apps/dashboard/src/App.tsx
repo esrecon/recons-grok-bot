@@ -7,6 +7,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { NewAgentModal } from "./components/NewAgentModal";
 import { Placeholder } from "./views/Placeholder";
+import { AuditView } from "./views/AuditView";
 
 export function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -106,12 +107,7 @@ export function App() {
             blurb="Scheduled and event-triggered automations per agent land in Phase 5, backed by Hermes cron."
           />
         )}
-        {view === "audit" && (
-          <Placeholder
-            title="Audit log"
-            blurb="The merged, filterable transcript of every agent conversation and agent-to-agent message lands in Phase 4 — the feature Grok Bot itself doesn't ship."
-          />
-        )}
+        {view === "audit" && <AuditView agents={agents} />}
         {view === "settings" && (
           <Placeholder
             title="Settings"

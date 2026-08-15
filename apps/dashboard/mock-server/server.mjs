@@ -36,6 +36,17 @@ seed("Recon", "Lead assistant — coordinates the team", "lead", true);
 seed("Scout", "Researches suppliers and drafts outreach", "workhorse", false);
 seed("Clerk", "Handles admin, invoices and bulk data entry", "bulk", false);
 
+// A small synthetic audit trail so the Audit tab renders in dev/e2e.
+const BASE = 1786000000;
+const AUDIT = [
+  { source: "session", agent_id: "recon", kind: "message", role: "user", ts: BASE + 1, text: "Find three suppliers for brake calipers." },
+  { source: "session", agent_id: "recon", kind: "tool_call", role: "assistant", ts: BASE + 2, text: "browser_navigate", extra: { tool: "browser_navigate" } },
+  { source: "a2a", agent_id: "recon", kind: "a2a", ts: BASE + 3, peer_from: "recon", peer_to: "scout", session_key: "agent:scout:job42", text: "Please price these three suppliers.", extra: { direction: "outbound" } },
+  { source: "a2a", agent_id: "recon", kind: "a2a", ts: BASE + 6, peer_from: "scout", peer_to: "recon", session_key: "agent:scout:job42", text: "Priced. Cheapest is Acme.", extra: { direction: "inbound" } },
+  { source: "cron", agent_id: "clerk", kind: "cron_run", ts: BASE + 7, text: "morning-brief", extra: { status: "ok" } },
+  { source: "webhook", agent_id: "scout", kind: "lifecycle", ts: BASE + 8, text: "post_tool_call" },
+].map((e, i) => ({ seq: i, ts_iso: new Date(e.ts * 1000).toISOString(), role: null, ...e }));
+
 function send(res, code, body, headers = {}) {
   const data = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json", ...headers });
@@ -117,6 +128,41 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/agents" && req.method === "GET") {
       return send(res, 200, [...agents.values()]);
+    }
+
+    if (pathname === "/api/audit/agents") {
+      return send(res, 200, { agents: [...agents.keys()] });
+    }
+
+    if (pathname === "/api/audit/export.jsonl") {
+      return send(
+        res,
+        200,
+        AUDIT.map((e) => JSON.stringify(e)).join("\n"),
+        { "content-type": "application/x-ndjson", "content-disposition": "attachment; filename=audit-export.jsonl" },
+      );
+    }
+
+    if (pathname === "/api/audit") {
+      const agent = url.searchParams.get("agent");
+      const a2aOnly = url.searchParams.get("a2a_only") === "true";
+      const source = url.searchParams.get("source");
+      const q = (url.searchParams.get("q") || "").toLowerCase();
+      let rows = AUDIT.slice();
+      if (agent) rows = rows.filter((e) => e.agent_id === agent);
+      if (source) rows = rows.filter((e) => e.source === source);
+      if (a2aOnly) rows = rows.filter((e) => e.source === "a2a");
+      if (q)
+        rows = rows.filter((e) =>
+          `${e.text} ${e.peer_from || ""} ${e.peer_to || ""} ${e.agent_id}`
+            .toLowerCase()
+            .includes(q),
+        );
+      return send(res, 200, { events: rows, count: rows.length });
+    }
+
+    if (pathname === "/api/hooks" && req.method === "POST") {
+      return send(res, 200, { status: "accepted" });
     }
 
     if (pathname === "/api/agents" && req.method === "POST") {

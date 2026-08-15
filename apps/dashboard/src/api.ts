@@ -1,4 +1,10 @@
-import type { Agent, ChatEvent, NewAgentInput } from "./types";
+import type {
+  Agent,
+  AuditEvent,
+  AuditFilters,
+  ChatEvent,
+  NewAgentInput,
+} from "./types";
 
 // Single-origin client for the orchestrator (proxied to the mock server in dev).
 const BASE = "/api";
@@ -34,6 +40,22 @@ export const api = {
     return fetch(`${BASE}/agents/${id}`, { method: "DELETE" }).then((r) => {
       if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
     });
+  },
+
+  audit(filters: AuditFilters = {}): Promise<{ events: AuditEvent[]; count: number }> {
+    const p = new URLSearchParams();
+    if (filters.agent) p.set("agent", filters.agent);
+    if (filters.source) p.set("source", filters.source);
+    if (filters.a2a_only) p.set("a2a_only", "true");
+    if (filters.q) p.set("q", filters.q);
+    const qs = p.toString();
+    return fetch(`${BASE}/audit${qs ? `?${qs}` : ""}`).then((r) =>
+      json<{ events: AuditEvent[]; count: number }>(r),
+    );
+  },
+
+  auditExportUrl(): string {
+    return `${BASE}/audit/export.jsonl`;
   },
 
   // Streams a chat turn as Server-Sent Events. Yields parsed ChatEvents until

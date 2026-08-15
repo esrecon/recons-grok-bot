@@ -12,6 +12,8 @@ vi.mock("../api", () => ({
     setStatus: vi.fn(),
     deleteAgent: vi.fn(),
     streamChat: vi.fn(),
+    audit: vi.fn().mockResolvedValue({ events: [], count: 0 }),
+    auditExportUrl: () => "/api/audit/export.jsonl",
   },
 }));
 
@@ -83,7 +85,7 @@ describe("App shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByText("Audit log"));
     expect(
-      await screen.findByText(/the feature Grok Bot itself doesn't ship/i),
+      await screen.findByText(/every message, tool call and agent-to-agent/i),
     ).toBeInTheDocument();
   });
 });

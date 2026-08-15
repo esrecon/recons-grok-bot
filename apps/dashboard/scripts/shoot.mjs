@@ -31,5 +31,9 @@ await shoot("new-agent", { width: 1200, height: 800 }, async (page) => {
   await page.waitForTimeout(150);
 });
 await shoot("phone", { width: 402, height: 850 });
+await shoot("audit", { width: 1200, height: 800 }, async (page) => {
+  await page.getByText("Audit log").click();
+  await page.getByText("Priced. Cheapest is Acme.").waitFor();
+});
 
 await browser.close();
