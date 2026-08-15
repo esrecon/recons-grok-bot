@@ -17,18 +17,24 @@ while IFS= read -r -d '' f; do
 done < <(find scripts tools -name '*.sh' -print0 2>/dev/null)
 echo "   ok"
 
-section "Config validation"
-if [ -f scripts/validate-configs.py ]; then
-  python3 scripts/validate-configs.py || FAILED=1
-else
-  skip "scripts/validate-configs.py not present yet"
-fi
-
 section "Orchestrator tests"
 if [ -f apps/orchestrator/pyproject.toml ]; then
   (cd apps/orchestrator && uv run --frozen pytest -q) || FAILED=1
 else
   skip "apps/orchestrator not present yet"
+fi
+
+section "Config validation"
+# Run through the orchestrator venv so pyyaml/jinja2 + the package are available
+# and the real templates get rendered and checked.
+if [ -f scripts/validate-configs.py ]; then
+  if [ -f apps/orchestrator/pyproject.toml ]; then
+    (cd apps/orchestrator && uv run --frozen python "$ROOT/scripts/validate-configs.py") || FAILED=1
+  else
+    python3 scripts/validate-configs.py || FAILED=1
+  fi
+else
+  skip "scripts/validate-configs.py not present yet"
 fi
 
 section "Skill validator self-test"

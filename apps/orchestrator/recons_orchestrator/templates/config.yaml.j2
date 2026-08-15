@@ -1,0 +1,69 @@
+# Hermes Agent config for "{{ record.name }}" ({{ record.id }})
+#
+# GENERATED AND OWNED BY THE ORCHESTRATOR — do not hand-edit; changes are
+# overwritten whenever the agent roster changes. Edit SOUL.md (persona) or the
+# shared config instead. Every key marked VERIFY should be checked against
+# https://hermes-agent.nousresearch.com/docs for the installed Hermes version
+# before you rely on it.
+
+# --- Identity -----------------------------------------------------------------
+soul_file: SOUL.md   # VERIFY key name (persona/identity file)
+
+# --- Model + failover ---------------------------------------------------------
+# Providers themselves (api keys / OAuth) are configured once at the shared
+# level; here we only pick this agent's model and its fallback chain.
+model:
+  provider: {{ tier.provider }}
+  default: {{ tier.model }}          # VERIFY model id
+fallback_providers:                   # VERIFY key name
+{% for fb in tier.fallbacks %}  - {{ fb }}
+{% endfor %}
+
+# --- Shared skills ------------------------------------------------------------
+# All agents read the same shared skill library so a skill taught to one is
+# usable by all. Agent-authored skills are staged for human approval.
+skills:
+  external_dirs:                      # VERIFY key name
+    - {{ shared_skills_dir }}
+  write_approval: true                # agent-created skills need human approval
+  guard_agent_created: true           # scan agent-authored skill content
+
+# --- Safety -------------------------------------------------------------------
+approvals:
+  mode: smart                         # LLM risk-scores actions; never "off"
+terminal:
+  backend: docker                     # sandbox tool execution on the VPS
+  # VERIFY docker limit keys; keep cap-drop ALL + resource limits (see docs/60)
+
+# --- Agent-to-agent (A2A) -----------------------------------------------------
+# This agent's inbound A2A server. The bearer tokens peers must present live in
+# service.env (A2A_PEER_TOKENS), not here. Bound to loopback; reachable only
+# over the tailnet.
+gateway:
+  platforms:
+    a2a:
+      enabled: true
+      extra:
+        port: {{ record.a2a_port }}
+        host: 127.0.0.1               # VERIFY host key; remote reach via tailscale
+
+# Outbound peers this agent may call (the mesh). Tokens are injected from
+# service.env so no secret is written into this file.
+a2a_agents:
+{% for peer in peers %}  {{ peer.id }}:
+    url: "http://127.0.0.1:{{ peer.a2a_port }}"
+    auth:
+      type: bearer
+      token: "${A2A_TOKEN_{{ peer.id | upper | replace('-', '_') }}}"   # from service.env
+    capabilities: [chat, terminal, files]   # VERIFY capability names
+{% endfor %}{% if not peers %}  {}
+{% endif %}
+
+# --- Audit feed ---------------------------------------------------------------
+# Every lifecycle event is POSTed (HMAC-signed) to the orchestrator's ledger so
+# the dashboard's Audit tab has a live feed in addition to on-disk transcripts.
+webhooks:                             # VERIFY block/key names
+  outbound:
+    - url: "{{ webhook_receiver_url }}"
+      secret: "${{ '{' }}{{ webhook_secret_env }}}"
+      events: [pre_tool_call, post_tool_call, on_session_start, on_session_end, subagent_start, subagent_stop]
