@@ -19,6 +19,15 @@ step()  { printf '\n\033[1m[%s/7] %s\033[0m\n' "$1" "$2"; }
 note()  { printf '   %s\n' "$1"; }
 die()   { printf '\n\033[31m%s\033[0m\n' "$1" >&2; exit 1; }
 
+# `set -e` can abort mid-script with nothing printed — the worst possible
+# failure mode when someone is following a runbook. Always say where it stopped.
+on_error() {
+  local rc=$1 line=$2
+  printf '\n\033[31mvps-quickstart.sh stopped at line %s (exit %s).\033[0m\n' "$line" "$rc" >&2
+  printf 'Nothing is half-finished — fix the cause and re-run; every step is idempotent.\n' >&2
+}
+trap 'on_error "$?" "$LINENO"' ERR
+
 [ "$(id -u)" -eq 0 ] || die "Run with sudo: sudo $0"
 [ "$TARGET_USER" != "root" ] || note "Running as root — services will be root-owned."
 
@@ -44,8 +53,17 @@ else
   note "A sign-in link will appear — open it and approve this machine."
   tailscale up
 fi
-MAGIC_DNS="$(tailscale status --json 2>/dev/null | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//')"
-[ -n "$MAGIC_DNS" ] || note "Could not read your MagicDNS name; you can find it with: tailscale status"
+# Read the machine's MagicDNS name. Not finding it is a cosmetic problem (we
+# just can't print the URL), never a reason to abort — so the pipeline is
+# explicitly allowed to fail despite `set -e -o pipefail`. `head` closing the
+# pipe early also SIGPIPEs `grep`, which pipefail would otherwise treat as fatal.
+MAGIC_DNS=""
+if ts_json="$(tailscale status --json 2>/dev/null)"; then
+  MAGIC_DNS="$(printf '%s' "$ts_json" \
+    | grep -o '"DNSName":"[^"]*"' \
+    | head -1 | cut -d'"' -f4 | sed 's/\.$//')" || MAGIC_DNS=""
+fi
+[ -n "$MAGIC_DNS" ] || note "Could not read your MagicDNS name; find it with: tailscale status"
 
 # ---------------------------------------------------------------------------
 step 3 "Hermes, uv and the service units"
