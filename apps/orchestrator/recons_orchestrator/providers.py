@@ -106,16 +106,29 @@ class ProviderService:
         self._lock = threading.Lock()
 
     # -- status ----------------------------------------------------------------
-    def _openai_oauth_present(self) -> bool:
-        """Hermes stores subscription OAuth tokens in its own auth store."""
+    def _oauth_present(self, *keywords: str) -> bool:
+        """Whether Hermes's own auth store holds a login for a provider.
+
+        Hermes keeps OAuth logins outside our secrets file, so a provider can be
+        perfectly usable with no API key set. Reporting it as "not connected"
+        because we only looked for a key would be wrong — and is exactly what
+        happens after Hermes's Quick Setup, which signs into Nous Portal via
+        free OAuth rather than a key.
+        """
         auth = self._home / "auth.json"  # VERIFY path/filename
         if not auth.exists():
             return False
         try:
-            text = auth.read_text("utf-8")
+            text = auth.read_text("utf-8").lower()
         except OSError:
             return False
-        return "openai" in text.lower() or "chatgpt" in text.lower()
+        return any(k in text for k in keywords)
+
+    def _openai_oauth_present(self) -> bool:
+        return self._oauth_present("openai", "chatgpt", "codex")
+
+    def _nous_oauth_present(self) -> bool:
+        return self._oauth_present("nous", "portal")
 
     def _wrapper_alive(self) -> bool:
         base = self._secrets.get("CLAUDE_WRAPPER_BASE_URL") or "http://127.0.0.1:8600/v1"
@@ -132,17 +145,31 @@ class ProviderService:
         out: list[ProviderStatus] = []
 
         # --- Nous: the cheap bulk tier, and the fastest way to a working bot ---
-        nous_set = self._secrets.is_set("NOUS_API_KEY")
+        # Hermes's Quick Setup signs in via free OAuth, so a working Nous
+        # connection often has no API key at all — check both.
+        if self._nous_oauth_present():
+            nous_state, nous_detail = (
+                ProviderState.CONFIGURED,
+                "Signed in to Nous Portal. Cheap, high-volume work and background tasks.",
+            )
+        elif self._secrets.is_set("NOUS_API_KEY"):
+            nous_state, nous_detail = (
+                ProviderState.CONFIGURED,
+                "Cheap, high-volume work and background tasks.",
+            )
+        else:
+            nous_state, nous_detail = (
+                ProviderState.NOT_CONFIGURED,
+                "Paste an API key from portal.nousresearch.com. Cheapest way to get running.",
+            )
         out.append(
             ProviderStatus(
                 id="nous",
                 label="Nous Portal",
                 tier="bulk",
                 method="api_key",
-                state=ProviderState.CONFIGURED if nous_set else ProviderState.NOT_CONFIGURED,
-                detail="Cheap, high-volume work and background tasks."
-                if nous_set
-                else "Paste an API key from portal.nousresearch.com. Cheapest way to get running.",
+                state=nous_state,
+                detail=nous_detail,
                 docs="https://portal.nousresearch.com",
             )
         )

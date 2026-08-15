@@ -65,6 +65,34 @@ def test_openai_oauth_detected_from_hermes_auth_store(tmp_path):
     assert _by_id(svc.statuses(), "openai").state is ProviderState.CONFIGURED
 
 
+def test_nous_oauth_detected_without_an_api_key(tmp_path):
+    """Hermes Quick Setup signs into Nous via OAuth and sets no key — the app
+    must not report that as 'not connected'."""
+    secrets = SecretsStore(tmp_path / "secrets.env")
+    secrets.ensure_file()
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "auth.json").write_text('{"providers": {"nous": {"refresh": "x"}}}')
+    svc = ProviderService(secrets, home=home)
+
+    nous = _by_id(svc.statuses(), "nous")
+    assert nous.state is ProviderState.CONFIGURED
+    assert "Signed in" in nous.detail
+    assert secrets.is_set("NOUS_API_KEY") is False  # genuinely no key
+
+
+def test_unrelated_auth_store_does_not_mark_providers_connected(tmp_path):
+    secrets = SecretsStore(tmp_path / "secrets.env")
+    secrets.ensure_file()
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "auth.json").write_text('{"providers": {"someoneelse": {"token": "x"}}}')
+    svc = ProviderService(secrets, home=home)
+
+    assert _by_id(svc.statuses(), "nous").state is ProviderState.NOT_CONFIGURED
+    assert _by_id(svc.statuses(), "openai").state is ProviderState.NOT_CONFIGURED
+
+
 def test_empty_key_rejected(svc):
     with pytest.raises(ValueError):
         svc.save_api_key("nous", "   ")
