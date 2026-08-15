@@ -1,0 +1,85 @@
+"""Systemd scope tests.
+
+Agents run as user services under a normal account, but root has no user-level
+systemd instance on most VPS images, so the manager must fall back to system
+scope rather than failing with "Failed to connect to bus".
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from recons_orchestrator.services import SystemdServiceManager, detect_scope
+
+
+@dataclass
+class FakeResult:
+    returncode: int
+
+
+class FakeRunner:
+    """Records commands; returns a configurable status for the probe."""
+
+    def __init__(self, user_scope_ok: bool = True) -> None:
+        self.calls: list[list[str]] = []
+        self._user_ok = user_scope_ok
+
+    def __call__(self, cmd, check=False, capture_output=False):
+        self.calls.append(list(cmd))
+        if cmd[:3] == ["systemctl", "--user", "show-environment"]:
+            return FakeResult(0 if self._user_ok else 1)
+        return FakeResult(0)
+
+
+def test_detects_user_scope_when_available(monkeypatch):
+    monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
+    assert detect_scope(FakeRunner(user_scope_ok=True)) == "user"
+
+
+def test_falls_back_to_system_scope_when_user_bus_is_missing(monkeypatch):
+    monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
+    assert detect_scope(FakeRunner(user_scope_ok=False)) == "system"
+
+
+def test_env_override_wins(monkeypatch):
+    monkeypatch.setenv("RECONS_SYSTEMD_SCOPE", "system")
+    assert detect_scope(FakeRunner(user_scope_ok=True)) == "system"
+    monkeypatch.setenv("RECONS_SYSTEMD_SCOPE", "user")
+    assert detect_scope(FakeRunner(user_scope_ok=False)) == "user"
+
+
+def test_missing_systemctl_binary_falls_back_to_system(monkeypatch):
+    monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
+
+    def explode(*_args, **_kwargs):
+        raise OSError("no systemctl here")
+
+    assert detect_scope(explode) == "system"
+
+
+def test_user_scope_passes_the_user_flag():
+    runner = FakeRunner()
+    SystemdServiceManager(runner=runner, scope="user").enable_now("x.service")
+    assert runner.calls[-1] == ["systemctl", "--user", "enable", "--now", "x.service"]
+
+
+def test_system_scope_omits_the_user_flag():
+    runner = FakeRunner()
+    SystemdServiceManager(runner=runner, scope="system").enable_now("x.service")
+    assert runner.calls[-1] == ["systemctl", "enable", "--now", "x.service"]
+
+
+def test_all_operations_respect_scope():
+    runner = FakeRunner()
+    mgr = SystemdServiceManager(runner=runner, scope="system")
+    mgr.daemon_reload()
+    mgr.stop("a.service")
+    mgr.restart("b.service")
+    mgr.disable("c.service")
+    assert runner.calls == [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "stop", "a.service"],
+        ["systemctl", "restart", "b.service"],
+        ["systemctl", "disable", "--now", "c.service"],
+    ]
+    assert mgr.scope == "system"

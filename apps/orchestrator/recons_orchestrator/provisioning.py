@@ -23,7 +23,7 @@ from .config import A2A_PORT_BASE, Settings
 from .mesh import Mesh, TokenFactory, _default_token
 from .models import AgentRecord, AgentSpec, AgentStatus, slugify
 from .roster import Roster
-from .services import ServiceManager, SystemdUserServiceManager
+from .services import ServiceManager, SystemdServiceManager
 
 Clock = Callable[[], datetime]
 
@@ -46,7 +46,7 @@ class Provisioner:
         token_factory: TokenFactory = _default_token,
     ) -> None:
         self._s = settings
-        self._services = services or SystemdUserServiceManager()
+        self._services = services or SystemdServiceManager()
         self._clock = clock
         self._roster = Roster(settings.roster_path)
         self._mesh = Mesh(settings, token_factory=token_factory)

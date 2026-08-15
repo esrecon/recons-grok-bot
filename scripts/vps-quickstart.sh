@@ -80,8 +80,26 @@ if ! as_user "cd '$REPO_DIR' && RECONS_ROOT='$RECONS_ROOT' ./scripts/vps-bootstr
      2>&1 | tee "$USER_LOG"; then
   die "Hermes/uv setup failed. Full log: $USER_LOG"
 fi
-loginctl enable-linger "$TARGET_USER" 2>/dev/null || true
-note "installed; agents will survive logout and reboot"
+# Which systemd scope the units landed in — user scope for a normal account,
+# system scope when we're root (root has no user-level systemd instance).
+if systemctl --user show-environment >/dev/null 2>&1; then
+  SYSTEMD_SCOPE="${RECONS_SYSTEMD_SCOPE:-user}"
+else
+  SYSTEMD_SCOPE="${RECONS_SYSTEMD_SCOPE:-system}"
+fi
+systemctl_do() {
+  if [ "$SYSTEMD_SCOPE" = "user" ]; then
+    as_user "systemctl --user $*"
+  else
+    systemctl "$@"
+  fi
+}
+if [ "$SYSTEMD_SCOPE" = "user" ]; then
+  loginctl enable-linger "$TARGET_USER" 2>/dev/null || true
+  note "installed as user services; agents will survive logout and reboot"
+else
+  note "installed as system services; agents start at boot"
+fi
 
 # ---------------------------------------------------------------------------
 step 4 "Building the dashboard"
@@ -111,8 +129,12 @@ if [ "$REPO_DIR" != "$RECONS_ROOT/app" ]; then
   chown -R "$TARGET_USER:$TARGET_USER" "$RECONS_ROOT/app"
 fi
 as_user "cd '$RECONS_ROOT/app/apps/orchestrator' && uv sync --frozen >/dev/null"
-as_user "systemctl --user daemon-reload && systemctl --user enable --now recons-orchestrator.service" || \
-  die "The orchestrator did not start. Check: systemctl --user status recons-orchestrator"
+systemctl_do daemon-reload
+if ! systemctl_do enable --now recons-orchestrator.service; then
+  scope_flag=""
+  [ "$SYSTEMD_SCOPE" = "user" ] && scope_flag="--user "
+  die "The orchestrator did not start. Check: systemctl ${scope_flag}status recons-orchestrator"
+fi
 
 for _ in $(seq 1 20); do
   if curl -fsS http://127.0.0.1:8330/api/health >/dev/null 2>&1; then break; fi
