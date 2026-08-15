@@ -67,7 +67,13 @@ fi
 
 # ---------------------------------------------------------------------------
 step 3 "Hermes, uv and the service units"
-as_user "cd '$REPO_DIR' && RECONS_ROOT='$RECONS_ROOT' ./scripts/vps-bootstrap.sh --user" >/dev/null
+USER_LOG="${TMPDIR:-/tmp}/recons-user-setup.log"
+if ! as_user "cd '$REPO_DIR' && RECONS_ROOT='$RECONS_ROOT' ./scripts/vps-bootstrap.sh --user" \
+     >"$USER_LOG" 2>&1; then
+  printf '\n--- last 25 lines of %s ---\n' "$USER_LOG" >&2
+  tail -25 "$USER_LOG" >&2
+  die "Hermes/uv setup failed. Full log: $USER_LOG"
+fi
 loginctl enable-linger "$TARGET_USER" 2>/dev/null || true
 note "installed; agents will survive logout and reboot"
 
