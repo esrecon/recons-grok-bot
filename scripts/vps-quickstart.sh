@@ -35,12 +35,12 @@ as_user() { sudo -u "$TARGET_USER" -H bash -lc "$*"; }
 
 # ---------------------------------------------------------------------------
 step 1 "System packages, firewall and Tailscale"
-# Log rather than discard: when this fails, the reason is the only thing that
-# matters, and swallowing it leaves you with a bare error and no next step.
+# Show output AND keep a log. Redirecting to a file alone hides two things that
+# matter: progress on slow steps, and any prompt an upstream installer decides
+# to ask — which then looks exactly like a hang. `set -o pipefail` makes the
+# `if !` see the real exit status rather than tee's.
 BOOTSTRAP_LOG="${TMPDIR:-/tmp}/recons-bootstrap.log"
-if ! "$REPO_DIR/scripts/vps-bootstrap.sh" >"$BOOTSTRAP_LOG" 2>&1; then
-  printf '\n--- last 25 lines of %s ---\n' "$BOOTSTRAP_LOG" >&2
-  tail -25 "$BOOTSTRAP_LOG" >&2
+if ! "$REPO_DIR/scripts/vps-bootstrap.sh" 2>&1 | tee "$BOOTSTRAP_LOG"; then
   die "System prep failed. Full log: $BOOTSTRAP_LOG"
 fi
 note "done (ufw default-deny, SSH key-only, docker, tailscale installed)"
@@ -67,11 +67,10 @@ fi
 
 # ---------------------------------------------------------------------------
 step 3 "Hermes, uv and the service units"
+note "installs uv and Hermes Agent — this downloads a lot, give it a few minutes"
 USER_LOG="${TMPDIR:-/tmp}/recons-user-setup.log"
 if ! as_user "cd '$REPO_DIR' && RECONS_ROOT='$RECONS_ROOT' ./scripts/vps-bootstrap.sh --user" \
-     >"$USER_LOG" 2>&1; then
-  printf '\n--- last 25 lines of %s ---\n' "$USER_LOG" >&2
-  tail -25 "$USER_LOG" >&2
+     2>&1 | tee "$USER_LOG"; then
   die "Hermes/uv setup failed. Full log: $USER_LOG"
 fi
 loginctl enable-linger "$TARGET_USER" 2>/dev/null || true
@@ -79,12 +78,19 @@ note "installed; agents will survive logout and reboot"
 
 # ---------------------------------------------------------------------------
 step 4 "Building the dashboard"
+BUILD_LOG="${TMPDIR:-/tmp}/recons-dashboard-build.log"
 if ! command -v npm >/dev/null; then
   note "installing Node.js 22"
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1
-  apt-get install -y -q nodejs >/dev/null
+  if ! { curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; } 2>&1 | tee "$BUILD_LOG"; then
+    die "Could not add the Node.js repository. Full log: $BUILD_LOG"
+  fi
+  apt-get install -y -q nodejs 2>&1 | tee -a "$BUILD_LOG"
 fi
-as_user "cd '$REPO_DIR/apps/dashboard' && npm ci --no-audit --no-fund >/dev/null && npm run build >/dev/null"
+note "npm ci + build — the longest step, usually 2-5 minutes"
+if ! as_user "cd '$REPO_DIR/apps/dashboard' && npm ci --no-audit --no-fund && npm run build" \
+     2>&1 | tee -a "$BUILD_LOG"; then
+  die "Dashboard build failed. Full log: $BUILD_LOG"
+fi
 install -d -o "$TARGET_USER" -g "$TARGET_USER" "$RECONS_ROOT/dashboard"
 cp -r "$REPO_DIR/apps/dashboard/dist/." "$RECONS_ROOT/dashboard/"
 chown -R "$TARGET_USER:$TARGET_USER" "$RECONS_ROOT/dashboard"
