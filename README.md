@@ -66,10 +66,12 @@ August 2026) live in [docs/00-research-report.md](docs/00-research-report.md).
 
 ## Quick start
 
-On a fresh Ubuntu 24.04 VPS:
+On an Ubuntu 24.04 VPS:
 
 ```bash
-git clone https://github.com/esrecon/recons-grok-bot /opt/recons/app
+# Clone, or update an existing checkout — safe to re-run.
+git clone https://github.com/esrecon/recons-grok-bot /opt/recons/app 2>/dev/null \
+  || git -C /opt/recons/app pull --ff-only
 sudo /opt/recons/app/scripts/vps-quickstart.sh
 ```
 

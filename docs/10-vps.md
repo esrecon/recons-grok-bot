@@ -18,9 +18,14 @@ Two commands. Everything else — API keys, ChatGPT sign-in, creating agents —
 happens **in the app**, not here.
 
 ```bash
-git clone https://github.com/esrecon/recons-grok-bot /opt/recons/app
+# Clone, or update an existing checkout — safe to re-run.
+git clone https://github.com/esrecon/recons-grok-bot /opt/recons/app 2>/dev/null \
+  || git -C /opt/recons/app pull --ff-only
 sudo /opt/recons/app/scripts/vps-quickstart.sh
 ```
+
+Both commands are idempotent: if a previous attempt got partway, running them
+again picks up where it left off rather than starting over.
 
 It installs the packages, sets the firewall to default-deny, joins your tailnet
 (you'll get a sign-in link), installs Hermes and the service units, builds the

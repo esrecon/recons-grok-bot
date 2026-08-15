@@ -26,7 +26,14 @@ as_user() { sudo -u "$TARGET_USER" -H bash -lc "$*"; }
 
 # ---------------------------------------------------------------------------
 step 1 "System packages, firewall and Tailscale"
-"$REPO_DIR/scripts/vps-bootstrap.sh" >/dev/null
+# Log rather than discard: when this fails, the reason is the only thing that
+# matters, and swallowing it leaves you with a bare error and no next step.
+BOOTSTRAP_LOG="${TMPDIR:-/tmp}/recons-bootstrap.log"
+if ! "$REPO_DIR/scripts/vps-bootstrap.sh" >"$BOOTSTRAP_LOG" 2>&1; then
+  printf '\n--- last 25 lines of %s ---\n' "$BOOTSTRAP_LOG" >&2
+  tail -25 "$BOOTSTRAP_LOG" >&2
+  die "System prep failed. Full log: $BOOTSTRAP_LOG"
+fi
 note "done (ufw default-deny, SSH key-only, docker, tailscale installed)"
 
 # ---------------------------------------------------------------------------

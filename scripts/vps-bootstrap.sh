@@ -24,7 +24,28 @@ system_prep() {
 
   log "Packages"
   apt-get update -q
-  apt-get install -y -q curl git ufw unattended-upgrades docker.io
+
+  pkgs=(curl git ufw unattended-upgrades)
+  # Many VPS images ship Docker CE from Docker's own repository. Installing
+  # docker.io on top of that makes apt unresolvable ("pkgProblemResolver::Resolve
+  # generated breaks"), so only add it when no docker is present at all.
+  if command -v docker >/dev/null; then
+    skip "docker already installed ($(docker --version 2>/dev/null || echo 'version unknown'))"
+  else
+    pkgs+=(docker.io)
+  fi
+
+  if ! apt-get install -y -q "${pkgs[@]}"; then
+    cat >&2 <<EOF
+
+   apt could not install: ${pkgs[*]}
+   Re-run it without -q to see which package is the problem:
+       apt-get install ${pkgs[*]}
+   Common causes: a half-finished upgrade (fix: apt-get -f install), or held
+   packages (list them with: apt-mark showhold).
+EOF
+    exit 1
+  fi
 
   log "Firewall (default deny inbound; SSH + tailscale only)"
   ufw allow OpenSSH >/dev/null
