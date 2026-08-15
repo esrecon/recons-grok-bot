@@ -1,0 +1,28 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Secrets — never commit real values
+.env
+*.env
+!*.env.example
+!env.example
+
+# Test artifacts
+playwright-report/
+test-results/
+coverage/
+
+# OS / editor
+.DS_Store
+*.swp
