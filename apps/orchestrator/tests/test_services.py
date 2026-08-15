@@ -57,6 +57,35 @@ def test_missing_systemctl_binary_falls_back_to_system(monkeypatch):
     assert detect_scope(explode) == "system"
 
 
+def test_recorded_scope_beats_probing(monkeypatch, tmp_path):
+    """The scope file records what was actually installed. Probing gives
+    different answers in different environments, so it must not override it."""
+    monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
+    (tmp_path / "systemd-scope").write_text("system\n")
+    # Probe would say "user"; the recorded scope must win.
+    assert detect_scope(FakeRunner(user_scope_ok=True), root=tmp_path) == "system"
+
+
+def test_recorded_scope_read_from_recons_root_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
+    monkeypatch.setenv("RECONS_ROOT", str(tmp_path))
+    (tmp_path / "systemd-scope").write_text("user\n")
+    assert detect_scope(FakeRunner(user_scope_ok=False)) == "user"
+
+
+def test_env_override_beats_even_the_recorded_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("RECONS_SYSTEMD_SCOPE", "user")
+    (tmp_path / "systemd-scope").write_text("system\n")
+    assert detect_scope(FakeRunner(user_scope_ok=False), root=tmp_path) == "user"
+
+
+def test_garbage_in_scope_file_falls_back_to_probing(monkeypatch, tmp_path):
+    monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
+    (tmp_path / "systemd-scope").write_text("banana\n")
+    assert detect_scope(FakeRunner(user_scope_ok=False), root=tmp_path) == "system"
+    assert detect_scope(FakeRunner(user_scope_ok=True), root=tmp_path) == "user"
+
+
 def test_user_scope_passes_the_user_flag():
     runner = FakeRunner()
     SystemdServiceManager(runner=runner, scope="user").enable_now("x.service")

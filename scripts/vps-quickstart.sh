@@ -31,7 +31,16 @@ trap 'on_error "$?" "$LINENO"' ERR
 [ "$(id -u)" -eq 0 ] || die "Run with sudo: sudo $0"
 [ "$TARGET_USER" != "root" ] || note "Running as root — services will be root-owned."
 
-as_user() { sudo -u "$TARGET_USER" -H bash -lc "$*"; }
+# `sudo` drops the variables `systemctl --user` needs to find its bus, so a
+# user-scope command run this way fails with "Failed to connect to bus" even on
+# an account that has a perfectly good session. Supply them explicitly.
+TARGET_UID="$(id -u "$TARGET_USER")"
+as_user() {
+  sudo -u "$TARGET_USER" -H \
+    env "XDG_RUNTIME_DIR=/run/user/$TARGET_UID" \
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$TARGET_UID/bus" \
+    bash -lc "$*"
+}
 
 # ---------------------------------------------------------------------------
 step 1 "System packages, firewall and Tailscale"
@@ -80,10 +89,13 @@ if ! as_user "cd '$REPO_DIR' && RECONS_ROOT='$RECONS_ROOT' ./scripts/vps-bootstr
      2>&1 | tee "$USER_LOG"; then
   die "Hermes/uv setup failed. Full log: $USER_LOG"
 fi
-# Which systemd scope the units landed in — user scope for a normal account,
-# system scope when we're root (root has no user-level systemd instance).
-if systemctl --user show-environment >/dev/null 2>&1; then
-  SYSTEMD_SCOPE="${RECONS_SYSTEMD_SCOPE:-user}"
+# Which scope the units actually landed in. Read what bootstrap recorded rather
+# than detecting again: this script's environment (an interactive root session,
+# which has a user bus) differs from the one bootstrap ran in (`sudo`, which
+# does not), so a second detection can and did disagree with the first.
+SCOPE_FILE="$RECONS_ROOT/systemd-scope"
+if [ -r "$SCOPE_FILE" ]; then
+  SYSTEMD_SCOPE="$(cat "$SCOPE_FILE")"
 else
   SYSTEMD_SCOPE="${RECONS_SYSTEMD_SCOPE:-system}"
 fi

@@ -215,6 +215,12 @@ EOF
     echo "   Installed as system services (no linger needed — they start at boot)."
   fi
 
+  # Record the scope actually used. Detection depends on the environment it runs
+  # in — a root SSH session has a user bus, the same account under `sudo` does
+  # not — so anything else that drives these units must read this rather than
+  # detect for itself and risk disagreeing.
+  printf '%s\n' "$scope" > "$RECONS_ROOT/systemd-scope"
+
   log "Dashboard build"
   if [ -d "$REPO_DIR/apps/dashboard/dist" ]; then
     skip "dist present (rebuild with: cd apps/dashboard && npm ci && npm run build)"
