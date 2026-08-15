@@ -144,18 +144,76 @@ EOF
   else
     install -m 600 "$REPO_DIR/config/shared-secrets.env.example" \
       "$RECONS_ROOT/shared/secrets.env"
-    echo "   Created $RECONS_ROOT/shared/secrets.env — fill it in (chmod 600)."
-    echo "   Generate the webhook secret with: openssl rand -hex 32"
+    echo "   Created $RECONS_ROOT/shared/secrets.env (chmod 600)."
+    echo "   Nothing to edit here — the orchestrator generates the audit signing"
+    echo "   secret on first boot, and you connect providers in the dashboard."
   fi
 
-  log "systemd user units"
-  install -d "$HOME/.config/systemd/user"
-  for unit in hermes-gateway@.service recons-orchestrator.service claude-wrapper.service; do
-    install -m 644 "$REPO_DIR/config/systemd/$unit" "$HOME/.config/systemd/user/$unit"
-  done
-  systemctl --user daemon-reload
-  echo "   Installed. Enable linger so agents survive logout:"
-  echo "     sudo loginctl enable-linger $USER"
+  # Agents normally run as *user* services owned by an unprivileged account.
+  # root has no user-level systemd instance on most VPS images, though —
+  # `systemctl --user` there fails with "Failed to connect to bus: No medium
+  # found" — so fall back to system scope when user scope isn't usable.
+  # RECONS_SYSTEMD_SCOPE=user|system overrides the detection.
+  scope="${RECONS_SYSTEMD_SCOPE:-}"
+  if [ -z "$scope" ]; then
+    if systemctl --user show-environment >/dev/null 2>&1; then
+      scope=user
+    else
+      scope=system
+    fi
+  fi
+
+  log "systemd units (${scope} scope)"
+  units="hermes-gateway@.service recons-orchestrator.service claude-wrapper.service"
+
+  # Resolve the real binary locations rather than trusting the paths written in
+  # the unit files: uv lands in ~/.local/bin or /usr/local/bin depending on how
+  # it was installed, hermes likewise, and systemd's own PATH includes neither
+  # home directory. Guessing wrong fails at service start, far from the cause.
+  uv_bin="$(command -v uv || true)"
+  hermes_bin="$(command -v hermes || true)"
+  [ -n "$uv_bin" ] || { echo "   uv not found on PATH" >&2; exit 1; }
+  [ -n "$hermes_bin" ] || { echo "   hermes not found on PATH" >&2; exit 1; }
+  echo "   uv:     $uv_bin"
+  echo "   hermes: $hermes_bin"
+
+  # Rewrite a unit for this machine: real binary paths, and the right install
+  # target for the scope (default.target is user scope's multi-user.target).
+  if [ "$scope" = "system" ]; then
+    target_fix='s/^WantedBy=default.target$/WantedBy=multi-user.target/'
+  else
+    target_fix=''   # user scope keeps default.target
+  fi
+
+  render_unit() {
+    sed -e "s|^ExecStart=/usr/bin/env hermes|ExecStart=${hermes_bin}|" \
+        -e "s|^ExecStart=/usr/local/bin/uv|ExecStart=${uv_bin}|" \
+        ${target_fix:+-e "$target_fix"} \
+        "$1"
+  }
+
+  if [ "$scope" = "user" ]; then
+    install -d "$HOME/.config/systemd/user"
+    for unit in $units; do
+      render_unit "$REPO_DIR/config/systemd/$unit" > "$HOME/.config/systemd/user/$unit"
+      chmod 644 "$HOME/.config/systemd/user/$unit"
+    done
+    systemctl --user daemon-reload
+    echo "   Installed. Enable linger so agents survive logout:"
+    echo "     sudo loginctl enable-linger $USER"
+  else
+    if [ "$(id -u)" -ne 0 ]; then
+      echo "   Cannot use system scope as $(whoami) — re-run this step as root," >&2
+      echo "   or set RECONS_SYSTEMD_SCOPE=user if your account has a systemd session." >&2
+      exit 1
+    fi
+    for unit in $units; do
+      render_unit "$REPO_DIR/config/systemd/$unit" > "/etc/systemd/system/$unit"
+      chmod 644 "/etc/systemd/system/$unit"
+    done
+    systemctl daemon-reload
+    echo "   Installed as system services (no linger needed — they start at boot)."
+  fi
 
   log "Dashboard build"
   if [ -d "$REPO_DIR/apps/dashboard/dist" ]; then
