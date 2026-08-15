@@ -25,7 +25,10 @@ system_prep() {
   log "Packages"
   apt-get update -q
 
-  pkgs=(curl git ufw unattended-upgrades)
+  # libatomic1: Hermes ships its own Node build, which links against
+  # libatomic.so.1. Minimal VPS images often omit it, and without it every node
+  # invocation dies with "cannot open shared object file".
+  pkgs=(curl git ufw unattended-upgrades ca-certificates libatomic1)
   # Many VPS images ship Docker CE from Docker's own repository. Installing
   # docker.io on top of that makes apt unresolvable ("pkgProblemResolver::Resolve
   # generated breaks"), so only add it when no docker is present at all.
@@ -110,6 +113,28 @@ EOF
   else
     # VERIFY the current install command against hermes-agent.nousresearch.com
     curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+  fi
+
+  # Hermes bundles its own Node. Prove it actually runs before we build anything
+  # on top of it — a missing shared library here surfaces much more clearly than
+  # it does three steps later.
+  if ! hermes --version >/dev/null 2>&1; then
+    hermes_err="$(hermes --version 2>&1 || true)"
+    cat >&2 <<EOF
+
+   Hermes is installed but will not run:
+     ${hermes_err}
+EOF
+    case "$hermes_err" in
+      *"cannot open shared object file"*)
+        missing="$(printf '%s' "$hermes_err" | sed -n 's/.*loading shared libraries: \([^:]*\):.*/\1/p' | head -1)"
+        cat >&2 <<EOF
+   A system library is missing${missing:+ (${missing})}. Install it and re-run:
+       sudo apt-get install -y libatomic1 ca-certificates
+EOF
+        ;;
+    esac
+    exit 1
   fi
   echo "   Pin >= v0.20.1 and keep it current — see docs/60-security-hardening.md"
 
