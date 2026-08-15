@@ -58,6 +58,17 @@ else
   skip "apps/dashboard not present yet"
 fi
 
+section "Dashboard e2e (Playwright, preinstalled Chromium)"
+if [ -f apps/dashboard/playwright.config.ts ]; then
+  if [ -x "${PW_CHROMIUM:-/opt/pw-browsers/chromium}" ]; then
+    (cd apps/dashboard && npx playwright test) || FAILED=1
+  else
+    skip "no Chromium at ${PW_CHROMIUM:-/opt/pw-browsers/chromium}"
+  fi
+else
+  skip "playwright config not present yet"
+fi
+
 section "Secret scan (literal keys must never be committed)"
 if grep -rEn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
     'sk-ant-[A-Za-z0-9_-]{8,}|sk-proj-[A-Za-z0-9_-]{8,}|sk-oat[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16}' . ; then

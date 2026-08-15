@@ -13,6 +13,7 @@ export function Sidebar({
   onNavigate,
   theme,
   onToggleTheme,
+  className = "",
 }: {
   agents: Agent[];
   selectedId: string | null;
@@ -22,9 +23,12 @@ export function Sidebar({
   onNavigate: (v: View) => void;
   theme: "light" | "dark";
   onToggleTheme: () => void;
+  className?: string;
 }) {
   return (
-    <aside className="flex h-full w-[280px] shrink-0 flex-col border-r border-hairline bg-surface">
+    <aside
+      className={`flex h-full flex-col border-r border-hairline bg-surface md:w-[280px] md:shrink-0 ${className}`}
+    >
       <header className="flex items-center justify-between px-4 py-3">
         <span className="text-[17px] font-semibold text-text-primary">Recons</span>
         <div className="flex items-center gap-1">

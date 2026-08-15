@@ -27,5 +27,14 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           find scripts tools -name '*.sh' -print0 | xargs -0 -r shellcheck
 
+      # CI has no preinstalled Chromium, so fetch Playwright's and point
+      # check-all at it. Locally the environment's browser is used instead.
+      - name: Install Playwright Chromium
+        working-directory: apps/dashboard
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          echo "PW_CHROMIUM=$(node -e "console.log(require('@playwright/test').chromium.executablePath())")" >> "$GITHUB_ENV"
+
       - name: check-all
         run: ./scripts/check-all.sh

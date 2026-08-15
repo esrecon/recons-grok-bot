@@ -41,5 +41,7 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
+    // Component tests only — e2e/ is Playwright's, run separately.
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });

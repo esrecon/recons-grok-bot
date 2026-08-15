@@ -18,6 +18,10 @@ export function App() {
   const [modalOpen, setModalOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>("light");
+  // On phones the app is a single-pane messenger: the roster is home, and
+  // opening an agent or a surface pushes it over the top with a back button.
+  // On md+ both panes show side by side, as on desktop.
+  const [mobileDetail, setMobileDetail] = useState(false);
 
   useEffect(() => {
     const t = loadTheme();
@@ -45,6 +49,7 @@ export function App() {
     await refresh();
     setSelectedId(created.id);
     setView("chats");
+    setMobileDetail(true);
   }
 
   function toggleTheme() {
@@ -58,20 +63,36 @@ export function App() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       <Sidebar
+        className={mobileDetail ? "hidden md:flex w-full" : "flex w-full"}
         agents={agents}
         selectedId={selectedId}
         view={view}
         onSelectAgent={(id) => {
           setSelectedId(id);
           setView("chats");
+          setMobileDetail(true);
         }}
         onNewAgent={() => setModalOpen(true)}
-        onNavigate={setView}
+        onNavigate={(v) => {
+          setView(v);
+          setMobileDetail(true);
+        }}
         theme={theme}
         onToggleTheme={toggleTheme}
       />
 
-      <main className="flex h-full flex-1 flex-col">
+      <main
+        className={`${mobileDetail ? "flex" : "hidden md:flex"} h-full flex-1 flex-col`}
+      >
+        {/* Phone-only back bar returning to the roster. */}
+        <button
+          type="button"
+          onClick={() => setMobileDetail(false)}
+          className="flex items-center gap-1 border-b border-hairline px-3 py-2 text-left text-sm font-medium text-text-secondary md:hidden"
+        >
+          <span aria-hidden>‹</span> Agents
+        </button>
+
         {view === "chats" &&
           (selected ? (
             <ChatView agent={selected} />
