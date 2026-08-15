@@ -1,0 +1,24 @@
+# claude-code-openai-wrapper: puts the official Claude Agent SDK behind an
+# OpenAI-compatible endpoint, authenticated with your own logged-in Claude CLI.
+# This is the route documented in docs/40-providers-and-tos.md — read the ToS
+# section there before enabling it, and pin the wrapper to a reviewed commit.
+#
+# Loopback only. Only the lead agent is configured to use it.
+[Unit]
+Description=Claude Agent SDK OpenAI-compatible wrapper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/recons/claude-wrapper
+# VERIFY the entrypoint against the pinned wrapper revision before first run.
+ExecStart=/usr/local/bin/uv run --frozen uvicorn main:app --host 127.0.0.1 --port 8600
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,25 @@
+# The orchestrator: serves the dashboard SPA, provisions agents, and hosts the
+# audit ledger + webhook receiver. Loopback only — published to your tailnet by
+# `tailscale serve` (docs/15-tailscale.md).
+[Unit]
+Description=Recons Grok Bot orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/recons/shared/secrets.env
+Environment=RECONS_ROOT=/opt/recons
+Environment=RECONS_DASHBOARD_DIST=/opt/recons/dashboard
+WorkingDirectory=/opt/recons/app/apps/orchestrator
+ExecStart=/usr/local/bin/uv run --frozen uvicorn recons_orchestrator.app:app --host 127.0.0.1 --port 8330
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/recons
+
+[Install]
+WantedBy=default.target
