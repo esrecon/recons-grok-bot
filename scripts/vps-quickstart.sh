@@ -67,7 +67,14 @@ fi
 
 # ---------------------------------------------------------------------------
 step 3 "Hermes, uv and the service units"
-note "installs uv and Hermes Agent — this downloads a lot, give it a few minutes"
+note "installs uv and Hermes Agent — downloads ~200MB (a browser for your agents),"
+note "so give it a few minutes."
+printf '\n'
+note "Hermes will ask how you want to set it up. Choose \033[1m1 (Quick Setup)\033[0m."
+note "It signs you into Nous Portal for free and takes seconds. Do NOT pick 2 —"
+note "that walks you through every provider by hand, which is the job this"
+note "dashboard exists to do, so you would be doing it twice."
+printf '\n'
 USER_LOG="${TMPDIR:-/tmp}/recons-user-setup.log"
 if ! as_user "cd '$REPO_DIR' && RECONS_ROOT='$RECONS_ROOT' ./scripts/vps-bootstrap.sh --user" \
      2>&1 | tee "$USER_LOG"; then
