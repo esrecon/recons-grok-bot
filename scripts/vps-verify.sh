@@ -12,6 +12,25 @@ fail() { printf '   \033[31m✗\033[0m %s\n' "$1"; FAILED=1; }
 info() { printf '   · %s\n' "$1"; }
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
+# check <command...> -- <pass-message> -- <fail-message>
+# Runs the command quietly and reports pass or fail. Keeps the assertions below
+# readable without `A && B || C`, which does not mean if-then-else.
+check() {
+  local cmd=() passmsg="" failmsg="" stage=0
+  for arg in "$@"; do
+    case "$stage" in
+      0) if [ "$arg" = "--" ]; then stage=1; else cmd+=("$arg"); fi ;;
+      1) if [ "$arg" = "--" ]; then stage=2; else passmsg="$arg"; fi ;;
+      2) failmsg="$arg" ;;
+    esac
+  done
+  if "${cmd[@]}" >/dev/null 2>&1; then
+    pass "$passmsg"
+  else
+    fail "$failmsg"
+  fi
+}
+
 section "Listening sockets"
 if command -v ss >/dev/null; then
   # Anything listening on a non-loopback address is a finding, unless it is the
@@ -22,7 +41,7 @@ if command -v ss >/dev/null; then
     pass "no services listening on non-loopback addresses"
   else
     fail "these sockets are not loopback-bound:"
-    echo "$EXPOSED" | sed 's/^/       /'
+    printf '       %s\n' "$EXPOSED"
   fi
 else
   info "ss not available; skipping socket check"
@@ -32,9 +51,11 @@ section "Firewall"
 if command -v ufw >/dev/null; then
   if ufw status 2>/dev/null | grep -q '^Status: active'; then
     pass "ufw active"
-    ufw status 2>/dev/null | grep -q 'deny (incoming)' \
-      && pass "default deny incoming" \
-      || fail "default incoming policy is not deny"
+    if ufw status 2>/dev/null | grep -q 'deny (incoming)'; then
+      pass "default deny incoming"
+    else
+      fail "default incoming policy is not deny"
+    fi
   else
     fail "ufw is not active"
   fi
@@ -67,11 +88,10 @@ section "Secrets"
 SEC="$RECONS_ROOT/shared/secrets.env"
 if [ -f "$SEC" ]; then
   MODE=$(stat -c '%a' "$SEC" 2>/dev/null || echo "?")
-  [ "$MODE" = "600" ] && pass "secrets.env is chmod 600" \
-                      || fail "secrets.env is $MODE (must be 600)"
-  grep -q '^RECONS_WEBHOOK_SECRET=.\+' "$SEC" \
-    && pass "webhook signing secret set" \
-    || fail "RECONS_WEBHOOK_SECRET is empty — the audit feed cannot be verified"
+  check test "$MODE" = "600" -- "secrets.env is chmod 600" \
+    -- "secrets.env is $MODE (must be 600)"
+  check grep -q '^RECONS_WEBHOOK_SECRET=.\+' "$SEC" -- "webhook signing secret set" \
+    -- "RECONS_WEBHOOK_SECRET is empty — the audit feed cannot be verified"
 else
   fail "$SEC missing"
 fi
@@ -79,8 +99,8 @@ fi
 TOK="$RECONS_ROOT/shared/a2a-tokens.json"
 if [ -f "$TOK" ]; then
   MODE=$(stat -c '%a' "$TOK" 2>/dev/null || echo "?")
-  [ "$MODE" = "600" ] && pass "a2a-tokens.json is chmod 600" \
-                      || fail "a2a-tokens.json is $MODE (must be 600)"
+  check test "$MODE" = "600" -- "a2a-tokens.json is chmod 600" \
+    -- "a2a-tokens.json is $MODE (must be 600)"
 fi
 
 section "Agent safety settings"
@@ -89,22 +109,29 @@ FOUND=0
 for cfg in "$RECONS_ROOT"/agents/*/home/config.yaml; do
   FOUND=1
   NAME=$(basename "$(dirname "$(dirname "$cfg")")")
-  grep -q 'mode: smart' "$cfg" && pass "$NAME: approvals on (smart)" \
-                               || fail "$NAME: approvals are not set to smart"
-  grep -q 'write_approval: true' "$cfg" && pass "$NAME: agent-written skills need approval" \
-                                        || fail "$NAME: skills.write_approval is not true"
-  grep -q 'backend: docker' "$cfg" && pass "$NAME: tool execution sandboxed in docker" \
-                                   || fail "$NAME: terminal backend is not docker"
-  grep -qE 'host:\s*127\.0\.0\.1' "$cfg" && pass "$NAME: A2A bound to loopback" \
-                                         || fail "$NAME: A2A host is not loopback"
+  check grep -q 'mode: smart' "$cfg" -- "$NAME: approvals on (smart)" \
+    -- "$NAME: approvals are not set to smart"
+  check grep -q 'write_approval: true' "$cfg" \
+    -- "$NAME: agent-written skills need approval" \
+    -- "$NAME: skills.write_approval is not true"
+  check grep -q 'backend: docker' "$cfg" \
+    -- "$NAME: tool execution sandboxed in docker" \
+    -- "$NAME: terminal backend is not docker"
+  check grep -qE 'host:[[:space:]]*127\.0\.0\.1' "$cfg" \
+    -- "$NAME: A2A bound to loopback" \
+    -- "$NAME: A2A host is not loopback"
 done
-[ "$FOUND" -eq 0 ] && info "no agents provisioned yet"
+if [ "$FOUND" -eq 0 ]; then
+  info "no agents provisioned yet"
+fi
 
 for env in "$RECONS_ROOT"/agents/*/service.env; do
   NAME=$(basename "$(dirname "$env")")
-  grep -q '^A2A_PEER_TOKENS=.\+' "$env" \
-    && pass "$NAME: A2A peer tokens present" \
-    || info "$NAME: no peers yet (single-agent install)"
+  if grep -q '^A2A_PEER_TOKENS=.\+' "$env"; then
+    pass "$NAME: A2A peer tokens present"
+  else
+    info "$NAME: no peers yet (single-agent install)"
+  fi
 done
 
 section "Hermes version"

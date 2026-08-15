@@ -33,7 +33,9 @@ systemctl --user daemon-reload
 systemctl --user restart recons-orchestrator.service 2>/dev/null || true
 systemctl --user list-units 'hermes-gateway@*' --no-legend 2>/dev/null \
   | awk '{print $1}' | while read -r unit; do
-      [ -n "$unit" ] && systemctl --user restart "$unit" || true
+      if [ -n "$unit" ]; then
+        systemctl --user restart "$unit" || true
+      fi
     done
 
 echo "== 6/6 Verify =="

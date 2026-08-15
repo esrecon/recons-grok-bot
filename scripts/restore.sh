@@ -27,7 +27,9 @@ if [ "$MODE" = "--in-place" ]; then
   echo "== Stopping agents =="
   systemctl --user list-units 'hermes-gateway@*' --no-legend 2>/dev/null \
     | awk '{print $1}' | while read -r unit; do
-        [ -n "$unit" ] && systemctl --user stop "$unit" || true
+        if [ -n "$unit" ]; then
+          systemctl --user stop "$unit" || true
+        fi
       done
   systemctl --user stop recons-orchestrator.service 2>/dev/null || true
 

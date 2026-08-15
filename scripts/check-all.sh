@@ -21,6 +21,14 @@ while IFS= read -r -d '' f; do
 done < <(find scripts tools -name '*.sh' -print0 2>/dev/null)
 echo "   ok"
 
+section "Shell scripts: shellcheck"
+if command -v shellcheck >/dev/null; then
+  find scripts tools -name '*.sh' -print0 | xargs -0 -r shellcheck || FAILED=1
+  echo "   ok"
+else
+  skip "shellcheck not installed (CI installs it)"
+fi
+
 section "Orchestrator tests"
 if [ -f apps/orchestrator/pyproject.toml ]; then
   (cd apps/orchestrator && uv run --frozen pytest -q) || FAILED=1
