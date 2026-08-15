@@ -8,6 +8,8 @@ an operator login sits in front (Phase 4).
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -16,8 +18,10 @@ from pydantic import BaseModel
 from .config import Settings
 from .ledger import Ledger
 from .models import AgentRecord, AgentSpec, AgentStatus
+from .providers import ProviderService
 from .provisioning import Provisioner, ProvisioningError
 from .routines import RoutineStore
+from .secrets_store import SecretsError, SecretsStore
 from .skills import SkillLibrary
 from .webhooks import WebhookReceiver
 
@@ -44,6 +48,16 @@ def get_routines(settings: Settings = Depends(get_settings)) -> RoutineStore:
     return RoutineStore(settings)
 
 
+def get_secrets(settings: Settings = Depends(get_settings)) -> SecretsStore:
+    return SecretsStore(settings.shared_secrets_env)
+
+
+# Overridden per-app in create_app so in-flight sign-in sessions survive polling
+# (a per-request instance would forget them between calls).
+def get_providers() -> ProviderService:  # pragma: no cover - replaced at startup
+    raise RuntimeError("provider service not configured")
+
+
 class RoutineInput(BaseModel):
     agent: str
     schedule: str
@@ -51,8 +65,34 @@ class RoutineInput(BaseModel):
     deliver: str | None = None
 
 
+class ApiKeyInput(BaseModel):
+    key: str
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """First boot: create the secrets file and mint the audit signing secret.
+
+    The user should never have to run `openssl rand` or hand-edit a file on the
+    VPS — that is an internal secret between Hermes and the ledger, not an
+    account credential.
+    """
+    settings = Settings()
+    try:
+        store = SecretsStore(settings.shared_secrets_env)
+        store.ensure_file()
+        store.ensure_webhook_secret()
+    except OSError:
+        # A missing or read-only root is surfaced by /api/setup rather than
+        # crashing the service on boot.
+        pass
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Recons Grok Bot orchestrator", version="0.1.0")
+    app = FastAPI(
+        title="Recons Grok Bot orchestrator", version="0.1.0", lifespan=_lifespan
+    )
 
     # One receiver instance so the delivery-id dedupe set persists across
     # requests. Tests override app.state.receiver with a temp-root instance.
@@ -61,9 +101,74 @@ def create_app() -> FastAPI:
     def receiver() -> WebhookReceiver:
         return app.state.receiver
 
+    # Likewise one provider service, so a sign-in started by one request is
+    # still pollable by the next. Tests override app.state.providers.
+    app.state.providers = ProviderService(SecretsStore(Settings().shared_secrets_env))
+    app.dependency_overrides[get_providers] = lambda: app.state.providers
+
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    # --- setup: what still needs doing, answered for the dashboard ------------
+    @app.get("/api/setup")
+    def setup_status(
+        prov: Provisioner = Depends(get_provisioner),
+        providers: ProviderService = Depends(get_providers),
+    ) -> dict:
+        statuses = providers.statuses()
+        any_provider = any(s.state.value == "configured" for s in statuses)
+        agents = prov.list_agents()
+        return {
+            "providers": [s.to_json() for s in statuses],
+            "has_provider": any_provider,
+            "has_agents": bool(agents),
+            # The wizard shows until there is at least one provider AND one agent.
+            "complete": any_provider and bool(agents),
+        }
+
+    # --- providers ------------------------------------------------------------
+    @app.get("/api/providers")
+    def list_providers(providers: ProviderService = Depends(get_providers)) -> dict:
+        return {"providers": [s.to_json() for s in providers.statuses()]}
+
+    @app.put("/api/providers/{provider_id}/key")
+    def set_provider_key(
+        provider_id: str,
+        body: ApiKeyInput,
+        providers: ProviderService = Depends(get_providers),
+    ) -> dict:
+        try:
+            return providers.save_api_key(provider_id, body.key).to_json()
+        except (ValueError, SecretsError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/providers/{provider_id}/key")
+    def clear_provider_key(
+        provider_id: str, providers: ProviderService = Depends(get_providers)
+    ) -> dict:
+        try:
+            return providers.clear(provider_id).to_json()
+        except (ValueError, SecretsError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/providers/{provider_id}/login", status_code=201)
+    def start_provider_login(
+        provider_id: str, providers: ProviderService = Depends(get_providers)
+    ) -> dict:
+        try:
+            return providers.start_login(provider_id).to_json()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/providers/login/{login_id}")
+    def poll_provider_login(
+        login_id: str, providers: ProviderService = Depends(get_providers)
+    ) -> dict:
+        session = providers.get_login(login_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="no such sign-in attempt")
+        return session.to_json()
 
     # --- audit ledger ---------------------------------------------------------
     @app.get("/api/audit")

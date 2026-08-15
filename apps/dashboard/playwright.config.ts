@@ -4,6 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
 // mirroring production (the orchestrator serves the same contract + the SPA).
 // Uses the environment's preinstalled Chromium — never downloads a browser.
 const PORT = 8340;
+const SETUP_PORT = 8341;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -23,6 +24,16 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
     {
+      // A brand-new install: its own server on its own port, since the fixture
+      // state (no providers, no agents) is the opposite of the other projects'.
+      name: "setup",
+      testMatch: /setup\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        baseURL: `http://127.0.0.1:${SETUP_PORT}`,
+      },
+    },
+    {
       name: "phone",
       testMatch: /phone\.spec\.ts/,
       use: {
@@ -34,11 +45,21 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
-    command: `node mock-server/server.mjs --serve dist`,
-    env: { PORT: String(PORT) },
-    url: `http://127.0.0.1:${PORT}/api/health`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
-  },
+  webServer: [
+    {
+      command: `node mock-server/server.mjs --serve dist`,
+      env: { PORT: String(PORT) },
+      url: `http://127.0.0.1:${PORT}/api/health`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      // Fresh-install fixture for the setup project.
+      command: `node mock-server/server.mjs --serve dist`,
+      env: { PORT: String(SETUP_PORT), RECONS_MOCK_FRESH: "1" },
+      url: `http://127.0.0.1:${SETUP_PORT}/api/health`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  ],
 });

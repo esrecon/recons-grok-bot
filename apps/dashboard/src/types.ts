@@ -62,6 +62,36 @@ export interface AuditFilters {
   q?: string;
 }
 
+export type ProviderState = "configured" | "not_configured" | "error";
+
+export interface Provider {
+  id: "nous" | "openai" | "anthropic" | string;
+  label: string;
+  tier: string;
+  method: "api_key" | "oauth" | "service";
+  state: ProviderState;
+  detail: string;
+  docs?: string;
+}
+
+export interface SetupStatus {
+  providers: Provider[];
+  has_provider: boolean;
+  has_agents: boolean;
+  complete: boolean;
+}
+
+export interface LoginSession {
+  id: string;
+  provider: string;
+  status: "starting" | "awaiting_user" | "success" | "failed";
+  url: string | null;
+  code: string | null;
+  message: string;
+  command: string;
+  output: string[];
+}
+
 export interface Skill {
   slug: string;
   name: string;

@@ -57,6 +57,25 @@ system_prep() {
 }
 
 user_setup() {
+  # Create the directories this mode needs, so `--user` works whether or not
+  # the sudo system-prep step ran first (and so a failed sudo step can't leave
+  # you with a half-set-up box). $RECONS_ROOT usually lives under /opt, which
+  # needs root to create the first time — say so plainly instead of failing with
+  # a bare "permission denied" three steps later.
+  log "Directories"
+  if ! install -d -m 755 "$RECONS_ROOT" 2>/dev/null; then
+    cat >&2 <<EOF
+   Cannot create $RECONS_ROOT as $(whoami).
+   Run the system prep first (it creates and hands you the directory):
+       sudo $0
+   or create it yourself:
+       sudo install -d -o "$(whoami)" -g "$(whoami)" "$RECONS_ROOT"
+EOF
+    exit 1
+  fi
+  install -d -m 755 "$RECONS_ROOT/agents" "$RECONS_ROOT/shared"
+  install -d -m 700 "$RECONS_ROOT/shared/skills"
+
   log "uv (Python runner)"
   if command -v uv >/dev/null; then
     skip "uv installed"
