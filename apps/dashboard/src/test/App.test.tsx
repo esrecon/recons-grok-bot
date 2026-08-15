@@ -14,6 +14,8 @@ vi.mock("../api", () => ({
     streamChat: vi.fn(),
     audit: vi.fn().mockResolvedValue({ events: [], count: 0 }),
     auditExportUrl: () => "/api/audit/export.jsonl",
+    skills: vi.fn().mockResolvedValue({ shared: [], pending: [] }),
+    routines: vi.fn().mockResolvedValue({ routines: [] }),
   },
 }));
 

@@ -62,6 +62,24 @@ export interface AuditFilters {
   q?: string;
 }
 
+export interface Skill {
+  slug: string;
+  name: string;
+  description: string;
+  source: "shared" | "pending";
+  agent?: string | null;
+  version?: string | null;
+}
+
+export interface Routine {
+  id: string;
+  agent: string;
+  schedule: string;
+  instruction: string;
+  enabled: boolean;
+  deliver?: string | null;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";

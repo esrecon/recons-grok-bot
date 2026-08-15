@@ -47,6 +47,17 @@ const AUDIT = [
   { source: "webhook", agent_id: "scout", kind: "lifecycle", ts: BASE + 8, text: "post_tool_call" },
 ].map((e, i) => ({ seq: i, ts_iso: new Date(e.ts * 1000).toISOString(), role: null, ...e }));
 
+// In-memory skills + routines so those tabs work in dev/e2e.
+let sharedSkills = [
+  { slug: "invoice-chase", name: "Invoice Chase", description: "Chase overdue invoices politely.", source: "shared", version: "1.0.0" },
+];
+let pendingSkills = [
+  { slug: "supplier-onboard", name: "Supplier Onboard", description: "Add a new supplier to the sheet and email them the forms.", source: "pending", agent: "scout" },
+];
+let routines = [
+  { id: "routine-1", agent: "clerk", schedule: "every weekday at 8:00am", instruction: "Summarise overnight emails and post the brief.", enabled: true, deliver: null },
+];
+
 function send(res, code, body, headers = {}) {
   const data = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(code, { "content-type": "application/json", ...headers });
@@ -163,6 +174,58 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/hooks" && req.method === "POST") {
       return send(res, 200, { status: "accepted" });
+    }
+
+    // --- skills ---
+    if (pathname === "/api/skills" && req.method === "GET") {
+      return send(res, 200, { shared: sharedSkills, pending: pendingSkills });
+    }
+    const sk = pathname.match(/^\/api\/skills\/([^/]+)\/([^/]+)\/(approve|reject)$/);
+    if (sk && req.method === "POST") {
+      const [, agent, slug, action] = sk;
+      const idx = pendingSkills.findIndex((s) => s.agent === agent && s.slug === slug);
+      if (idx === -1) return send(res, 404, { detail: "no such pending skill" });
+      const [draft] = pendingSkills.splice(idx, 1);
+      if (action === "approve") {
+        const approved = { ...draft, source: "shared", agent: null };
+        sharedSkills.push(approved);
+        return send(res, 200, approved);
+      }
+      res.writeHead(204).end();
+      return;
+    }
+
+    // --- routines ---
+    if (pathname === "/api/routines" && req.method === "GET") {
+      return send(res, 200, { routines });
+    }
+    if (pathname === "/api/routines" && req.method === "POST") {
+      const body = await readBody(req);
+      const r = {
+        id: `routine-${routines.length + 1}`,
+        agent: body.agent,
+        schedule: body.schedule,
+        instruction: body.instruction,
+        enabled: true,
+        deliver: body.deliver ?? null,
+      };
+      routines.push(r);
+      return send(res, 201, r);
+    }
+    const rt = pathname.match(/^\/api\/routines\/([^/]+)\/([^/]+)(?:\/(enable|pause))?$/);
+    if (rt) {
+      const [, agent, id, action] = rt;
+      const r = routines.find((x) => x.agent === agent && x.id === id);
+      if (!r) return send(res, 404, { detail: "no such routine" });
+      if (action === "enable" || action === "pause") {
+        r.enabled = action === "enable";
+        return send(res, 200, r);
+      }
+      if (req.method === "DELETE") {
+        routines = routines.filter((x) => !(x.agent === agent && x.id === id));
+        res.writeHead(204).end();
+        return;
+      }
     }
 
     if (pathname === "/api/agents" && req.method === "POST") {

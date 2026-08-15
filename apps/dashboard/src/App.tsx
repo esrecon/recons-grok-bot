@@ -8,6 +8,8 @@ import { ChatView } from "./components/ChatView";
 import { NewAgentModal } from "./components/NewAgentModal";
 import { Placeholder } from "./views/Placeholder";
 import { AuditView } from "./views/AuditView";
+import { SkillsView } from "./views/SkillsView";
+import { RoutinesView } from "./views/RoutinesView";
 
 export function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -95,18 +97,8 @@ export function App() {
             </div>
           ))}
 
-        {view === "skills" && (
-          <Placeholder
-            title="Skills"
-            blurb="The shared skill library and the teach-mode approval queue land in Phase 5. Skills taught to one agent are usable by all."
-          />
-        )}
-        {view === "routines" && (
-          <Placeholder
-            title="Routines"
-            blurb="Scheduled and event-triggered automations per agent land in Phase 5, backed by Hermes cron."
-          />
-        )}
+        {view === "skills" && <SkillsView agents={agents} />}
+        {view === "routines" && <RoutinesView agents={agents} />}
         {view === "audit" && <AuditView agents={agents} />}
         {view === "settings" && (
           <Placeholder

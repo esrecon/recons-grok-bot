@@ -4,6 +4,8 @@ import type {
   AuditFilters,
   ChatEvent,
   NewAgentInput,
+  Routine,
+  Skill,
 } from "./types";
 
 // Single-origin client for the orchestrator (proxied to the mock server in dev).
@@ -56,6 +58,55 @@ export const api = {
 
   auditExportUrl(): string {
     return `${BASE}/audit/export.jsonl`;
+  },
+
+  skills(): Promise<{ shared: Skill[]; pending: Skill[] }> {
+    return fetch(`${BASE}/skills`).then((r) =>
+      json<{ shared: Skill[]; pending: Skill[] }>(r),
+    );
+  },
+
+  approveSkill(agent: string, slug: string): Promise<Skill> {
+    return fetch(`${BASE}/skills/${agent}/${slug}/approve`, { method: "POST" }).then(
+      (r) => json<Skill>(r),
+    );
+  },
+
+  rejectSkill(agent: string, slug: string): Promise<void> {
+    return fetch(`${BASE}/skills/${agent}/${slug}/reject`, { method: "POST" }).then(
+      (r) => {
+        if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+      },
+    );
+  },
+
+  routines(): Promise<{ routines: Routine[] }> {
+    return fetch(`${BASE}/routines`).then((r) => json<{ routines: Routine[] }>(r));
+  },
+
+  createRoutine(input: {
+    agent: string;
+    schedule: string;
+    instruction: string;
+    deliver?: string;
+  }): Promise<Routine> {
+    return fetch(`${BASE}/routines`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }).then((r) => json<Routine>(r));
+  },
+
+  toggleRoutine(agent: string, id: string, action: "enable" | "pause"): Promise<Routine> {
+    return fetch(`${BASE}/routines/${agent}/${id}/${action}`, { method: "POST" }).then(
+      (r) => json<Routine>(r),
+    );
+  },
+
+  deleteRoutine(agent: string, id: string): Promise<void> {
+    return fetch(`${BASE}/routines/${agent}/${id}`, { method: "DELETE" }).then((r) => {
+      if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+    });
   },
 
   // Streams a chat turn as Server-Sent Events. Yields parsed ChatEvents until
