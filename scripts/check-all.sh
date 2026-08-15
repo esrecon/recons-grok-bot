@@ -8,6 +8,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 FAILED=0
 
+# The dashboard's e2e tests use the environment's preinstalled Chromium, so
+# never let npm postinstall try to download a browser during CI installs.
+export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 skip()    { printf '   (skipped: %s)\n' "$1"; }
 

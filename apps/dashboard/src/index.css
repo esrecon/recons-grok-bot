@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens reverse-engineered from Grok Bot's published UI (App Store
+ * screenshots + desktop captures). Light-first, monochrome chrome with black as
+ * the only accent; a real dark mode swaps the surfaces. All hex values are
+ * sampled approximations — see docs/00-research-report.md for provenance.
+ */
+:root {
+  --bg: #ffffff;
+  --surface: #f7f7f8;
+  --surface-2: #f2f2f4;
+  --ink: #0d0d0f; /* near-black: user bubbles + every primary CTA */
+  --ink-contrast: #ffffff;
+  --text-primary: #111111;
+  --text-secondary: #8e8e93;
+  --hairline: #e6e6e9;
+  --bubble-in: #f2f2f4;
+  --bubble-in-text: #111111;
+  --bubble-out: #0d0d0f;
+  --bubble-out-text: #ffffff;
+  --amber: #e8a13c; /* needs-a-human / sign-in handoff */
+  --amber-bg: #fbf3e6;
+  --recording: #e5484d; /* teach-a-task recording border */
+  --unread: #0a84ff;
+}
+
+.dark {
+  --bg: #141416;
+  --surface: #1c1c1e;
+  --surface-2: #2a2a2c;
+  --ink: #ffffff; /* in dark mode the primary CTA inverts to white-on-dark chips */
+  --ink-contrast: #0d0d0f;
+  --text-primary: #ffffff;
+  --text-secondary: #9a9aa0;
+  --hairline: #2e2e31;
+  --bubble-in: #232325;
+  --bubble-in-text: #ffffff;
+  --bubble-out: #ffffff;
+  --bubble-out-text: #0d0d0f;
+  --amber: #e8a13c;
+  --amber-bg: #3a2c14;
+  --recording: #e5484d;
+  --unread: #0a84ff;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* Thin, unobtrusive scrollbars in keeping with the messenger aesthetic. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--hairline);
+  border-radius: 8px;
+}
