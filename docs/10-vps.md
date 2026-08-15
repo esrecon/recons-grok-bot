@@ -27,6 +27,22 @@ sudo /opt/recons/app/scripts/vps-quickstart.sh
 Both commands are idempotent: if a previous attempt got partway, running them
 again picks up where it left off rather than starting over.
 
+**Two things to expect during step 3.** It downloads roughly 200 MB — Hermes
+installs its own browser (Playwright Chromium) so your agents can use real
+websites. Then Hermes's installer asks how to set itself up:
+
+```
+How would you like to set up Hermes?
+  1. Quick Setup (Nous Portal) — free OAuth login, no API keys  (recommended)
+  2. Full setup — configure every provider, tool & option yourself
+  3. Blank Slate — everything off except the bare minimum
+```
+
+**Choose 1.** It signs you into Nous Portal for free and finishes in seconds.
+Option 2 walks you through configuring every provider in the terminal, which is
+exactly what the dashboard's setup screen does — you would be doing the same job
+twice, in the harder place.
+
 It installs the packages, sets the firewall to default-deny, joins your tailnet
 (you'll get a sign-in link), installs Hermes and the service units, builds the
 dashboard, starts the orchestrator, publishes it privately over HTTPS, and runs
