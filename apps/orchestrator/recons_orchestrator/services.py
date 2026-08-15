@@ -15,16 +15,34 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from typing import Literal, Protocol
 
 Scope = Literal["user", "system"]
 
 
-def detect_scope(runner=subprocess.run) -> Scope:
-    """Prefer user scope; fall back to system scope when it isn't usable."""
+def detect_scope(runner=subprocess.run, root: Path | None = None) -> Scope:
+    """Which systemd scope this install uses.
+
+    Order matters. The scope file is written by vps-bootstrap.sh at install time
+    and is authoritative: probing gives different answers in different
+    environments (an interactive root session has a user bus, the same account
+    under `sudo` does not), so two components that each probe can disagree and
+    install units in one scope while driving them in the other. Probing is only
+    the last resort.
+    """
     override = os.environ.get("RECONS_SYSTEMD_SCOPE", "").strip().lower()
     if override in ("user", "system"):
         return override  # type: ignore[return-value]
+
+    base = root or Path(os.environ.get("RECONS_ROOT", "/opt/recons"))
+    try:
+        recorded = (base / "systemd-scope").read_text("utf-8").strip().lower()
+        if recorded in ("user", "system"):
+            return recorded  # type: ignore[return-value]
+    except OSError:
+        pass
+
     try:
         result = runner(
             ["systemctl", "--user", "show-environment"],
