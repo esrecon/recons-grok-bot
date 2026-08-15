@@ -3,6 +3,12 @@
 You pay for Claude and ChatGPT already. This chapter is about using them here
 without pretending the rules are simpler than they are.
 
+> **You connect all of these in the app**, on the setup screen or under
+> **Settings → Providers** — paste a key, or click *Sign in with ChatGPT* and
+> follow the link and code it shows you. Nothing below needs to be typed on the
+> VPS. This chapter is the *why*: what each provider costs you, and where the
+> terms actually stand.
+
 Three tiers, assigned per agent when you create it:
 
 | Tier | Provider | Used for | Status |
@@ -15,17 +21,20 @@ Three tiers, assigned per agent when you create it:
 
 OpenAI's position is clear and friendly. "Sign in with ChatGPT" is supported in
 Codex, and in May 2026 Sam Altman publicly endorsed signing into third-party
-agents (OpenClaw specifically) with a ChatGPT account. Hermes supports it
-natively:
+agents (OpenClaw specifically) with a ChatGPT account.
 
-```bash
-hermes model      # choose "ChatGPT or Codex Subscription", complete device-code login
-```
+**In the app:** Settings → Providers → *Sign in with ChatGPT*. The app runs the
+device-code flow and shows you a link and a short code; open the link, enter the
+code, and the card flips to **Connected**. The token is stored by Hermes itself,
+not in the secrets file.
 
-The OAuth token lands in that agent's `auth.json` — nothing goes in
-`secrets.env`. Flat rate, no per-token billing, subject to your plan's usage
-limits. This is why the kit makes it the **default for every new agent** and the
-first fallback in every chain.
+Flat rate, no per-token billing, subject to your plan's usage limits. This is why
+the kit makes it the **default for every new agent** and the first fallback in
+every chain.
+
+If the sign-in helper can't run (an older Hermes with a different subcommand, say),
+the app tells you the exact command to run instead rather than leaving you
+waiting — and you can always paste an API key under *Or use an API key*.
 
 ## Claude — the lead tier, and the honest caveat
 
@@ -78,27 +87,19 @@ systemctl --user enable --now claude-wrapper.service
 Community software running with your Claude credentials deserves a read-through
 first. Pin a commit rather than tracking `main`.
 
-**The one-line fallback**, when you want it — in `secrets.env`:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-and change the lead agent's provider from `claude_wrapper` to `anthropic` in
-`apps/orchestrator/recons_orchestrator/config.py` (the `TIERS` table). Restart
-the agent. Done.
+**The fallback, when you want it:** in the app, Settings → Providers → Claude →
+paste a Console API key. Saving one automatically switches the lead agent off the
+wrapper and onto the key (it sets `ANTHROPIC_AUTH_MODE=api-key` for you).
+Disconnecting switches it back. No file editing, no restart dance.
 
 ## Nous Portal — the bulk tier
 
 Ordinary paid API, no ambiguity. Hermes models at roughly **$0.05 in / $0.20 out
 per million tokens** — one to two orders of magnitude cheaper than GPT-5.x.
 
-Get a key at [portal.nousresearch.com](https://portal.nousresearch.com), then in
-`secrets.env`:
-
-```bash
-NOUS_API_KEY=...
-```
+Get a key at [portal.nousresearch.com](https://portal.nousresearch.com), then
+paste it into the app: Settings → Providers → Nous Portal → **Save**. This is the
+fastest route to a working bot, so the setup screen suggests it first.
 
 Worth using for more than bulk agents: Hermes has ~11 auxiliary task slots
 (approval risk-scoring, context compression, title generation, tool routing) that

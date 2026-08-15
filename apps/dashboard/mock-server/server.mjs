@@ -32,9 +32,13 @@ function seed(name, role, tier, isLead) {
     created_at: "2026-08-15T12:00:00+00:00",
   });
 }
-seed("Recon", "Lead assistant — coordinates the team", "lead", true);
-seed("Scout", "Researches suppliers and drafts outreach", "workhorse", false);
-seed("Clerk", "Handles admin, invoices and bulk data entry", "bulk", false);
+// RECONS_MOCK_FRESH=1 simulates a brand-new install (no providers, no agents)
+// so the first-run setup wizard can be exercised.
+if (process.env.RECONS_MOCK_FRESH !== "1") {
+  seed("Recon", "Lead assistant — coordinates the team", "lead", true);
+  seed("Scout", "Researches suppliers and drafts outreach", "workhorse", false);
+  seed("Clerk", "Handles admin, invoices and bulk data entry", "bulk", false);
+}
 
 // A small synthetic audit trail so the Audit tab renders in dev/e2e.
 const BASE = 1786000000;
@@ -57,6 +61,44 @@ let pendingSkills = [
 let routines = [
   { id: "routine-1", agent: "clerk", schedule: "every weekday at 8:00am", instruction: "Summarise overnight emails and post the brief.", enabled: true, deliver: null },
 ];
+
+// Provider setup state. Seeded as configured so the normal UI shows by default;
+// run with RECONS_MOCK_FRESH=1 to exercise the first-run setup wizard.
+const fresh = process.env.RECONS_MOCK_FRESH === "1";
+const providerState = {
+  nous: fresh ? null : "seeded",
+  openai: fresh ? null : "seeded",
+  anthropic: null,
+};
+const logins = new Map();
+
+function providerList() {
+  return [
+    {
+      id: "nous", label: "Nous Portal", tier: "bulk", method: "api_key",
+      state: providerState.nous ? "configured" : "not_configured",
+      detail: providerState.nous
+        ? "Cheap, high-volume work and background tasks."
+        : "Paste an API key from portal.nousresearch.com. Cheapest way to get running.",
+      docs: "https://portal.nousresearch.com",
+    },
+    {
+      id: "openai", label: "ChatGPT", tier: "workhorse", method: "oauth",
+      state: providerState.openai ? "configured" : "not_configured",
+      detail: providerState.openai
+        ? "Signed in with your ChatGPT subscription."
+        : "Sign in with the ChatGPT subscription you already pay for.",
+    },
+    {
+      id: "anthropic", label: "Claude", tier: "lead", method: "service",
+      state: providerState.anthropic ? "configured" : "not_configured",
+      detail: providerState.anthropic
+        ? "Using a Claude Console API key (pay-as-you-go)."
+        : "Optional. Start the wrapper service, or switch to a Console API key.",
+      docs: "docs/40-providers-and-tos.md",
+    },
+  ];
+}
 
 function send(res, code, body, headers = {}) {
   const data = typeof body === "string" ? body : JSON.stringify(body);
@@ -137,8 +179,83 @@ const server = http.createServer(async (req, res) => {
   try {
     if (pathname === "/api/health") return send(res, 200, { status: "ok" });
 
+    // Test-only: restore the fixture's starting state so e2e tests don't leak
+    // into each other. Present only in the mock, never in the orchestrator.
+    if (pathname === "/api/__reset" && req.method === "POST") {
+      agents.clear();
+      logins.clear();
+      providerState.nous = fresh ? null : "seeded";
+      providerState.openai = fresh ? null : "seeded";
+      providerState.anthropic = null;
+      if (!fresh) {
+        seed("Recon", "Lead assistant — coordinates the team", "lead", true);
+        seed("Scout", "Researches suppliers and drafts outreach", "workhorse", false);
+        seed("Clerk", "Handles admin, invoices and bulk data entry", "bulk", false);
+      }
+      return send(res, 200, { status: "reset" });
+    }
+
     if (pathname === "/api/agents" && req.method === "GET") {
       return send(res, 200, [...agents.values()]);
+    }
+
+    // --- setup + providers ---
+    if (pathname === "/api/setup") {
+      const providers = providerList();
+      const hasProvider = providers.some((p) => p.state === "configured");
+      return send(res, 200, {
+        providers,
+        has_provider: hasProvider,
+        has_agents: agents.size > 0,
+        complete: hasProvider && agents.size > 0,
+      });
+    }
+
+    if (pathname === "/api/providers" && req.method === "GET") {
+      return send(res, 200, { providers: providerList() });
+    }
+
+    const pk = pathname.match(/^\/api\/providers\/([^/]+)\/key$/);
+    if (pk) {
+      const id = pk[1];
+      if (!(id in providerState)) return send(res, 400, { detail: "unknown provider" });
+      if (req.method === "PUT") {
+        const body = await readBody(req);
+        if (!String(body.key || "").trim()) return send(res, 400, { detail: "key must not be empty" });
+        providerState[id] = "key";
+        return send(res, 200, providerList().find((p) => p.id === id));
+      }
+      if (req.method === "DELETE") {
+        providerState[id] = null;
+        return send(res, 200, providerList().find((p) => p.id === id));
+      }
+    }
+
+    const pl = pathname.match(/^\/api\/providers\/([^/]+)\/login$/);
+    if (pl && req.method === "POST") {
+      const id = pl[1];
+      if (id !== "openai") return send(res, 400, { detail: "no subscription sign-in" });
+      const loginId = `login-${logins.size + 1}`;
+      // Simulate the device-code flow: link+code now, success shortly after.
+      const session = {
+        id: loginId, provider: id, status: "awaiting_user",
+        url: "https://auth.example.com/device", code: "WXYZ-1234",
+        message: "", command: "hermes auth add openai", output: [],
+      };
+      logins.set(loginId, session);
+      setTimeout(() => {
+        session.status = "success";
+        session.message = "Signed in. Your agents can use this subscription now.";
+        providerState.openai = "oauth";
+      }, 1200);
+      return send(res, 201, session);
+    }
+
+    const lp = pathname.match(/^\/api\/providers\/login\/([^/]+)$/);
+    if (lp) {
+      const session = logins.get(lp[1]);
+      if (!session) return send(res, 404, { detail: "no such sign-in attempt" });
+      return send(res, 200, session);
     }
 
     if (pathname === "/api/audit/agents") {

@@ -3,8 +3,11 @@ import type {
   AuditEvent,
   AuditFilters,
   ChatEvent,
+  LoginSession,
   NewAgentInput,
+  Provider,
   Routine,
+  SetupStatus,
   Skill,
 } from "./types";
 
@@ -58,6 +61,40 @@ export const api = {
 
   auditExportUrl(): string {
     return `${BASE}/audit/export.jsonl`;
+  },
+
+  setup(): Promise<SetupStatus> {
+    return fetch(`${BASE}/setup`).then((r) => json<SetupStatus>(r));
+  },
+
+  providers(): Promise<{ providers: Provider[] }> {
+    return fetch(`${BASE}/providers`).then((r) => json<{ providers: Provider[] }>(r));
+  },
+
+  saveProviderKey(id: string, key: string): Promise<Provider> {
+    return fetch(`${BASE}/providers/${id}/key`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key }),
+    }).then((r) => json<Provider>(r));
+  },
+
+  clearProviderKey(id: string): Promise<Provider> {
+    return fetch(`${BASE}/providers/${id}/key`, { method: "DELETE" }).then((r) =>
+      json<Provider>(r),
+    );
+  },
+
+  startProviderLogin(id: string): Promise<LoginSession> {
+    return fetch(`${BASE}/providers/${id}/login`, { method: "POST" }).then((r) =>
+      json<LoginSession>(r),
+    );
+  },
+
+  pollProviderLogin(loginId: string): Promise<LoginSession> {
+    return fetch(`${BASE}/providers/login/${loginId}`).then((r) =>
+      json<LoginSession>(r),
+    );
   },
 
   skills(): Promise<{ shared: Skill[]; pending: Skill[] }> {

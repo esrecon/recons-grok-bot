@@ -66,14 +66,22 @@ August 2026) live in [docs/00-research-report.md](docs/00-research-report.md).
 
 ## Quick start
 
+On a fresh Ubuntu 24.04 VPS:
+
 ```bash
-sudo ./scripts/vps-bootstrap.sh      # system prep: firewall, docker, tailscale
-./scripts/vps-bootstrap.sh --user    # hermes, uv, systemd units, secrets file
-sudo tailscale up && sudo tailscale serve --bg --https=443 http://127.0.0.1:8330
-./scripts/vps-verify.sh              # prove nothing is exposed
+git clone https://github.com/esrecon/recons-grok-bot /opt/recons/app
+sudo /opt/recons/app/scripts/vps-quickstart.sh
 ```
 
-Then open `https://<your-magicdns-name>/` and click **+** to hire your first agent.
+That's the whole server-side install — packages, firewall, Tailscale, Hermes, the
+orchestrator, the dashboard, and a private HTTPS address on your tailnet. It
+prints your URL when it's done.
+
+**Everything after that happens in the app**: connect a model provider (paste a
+key, or sign in with your ChatGPT subscription — the link and code appear in the
+app), then create your first agent. No config files, no keys in the terminal.
+
+On your phone: install Tailscale, open the same URL in Chrome, tap **Install app**.
 
 ## Development
 

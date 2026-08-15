@@ -5,10 +5,12 @@ import type { Agent } from "../types";
 // Mock the API module so the shell can be tested without a backend.
 const listAgents = vi.fn();
 const createAgent = vi.fn();
+const setupFn = vi.fn();
 vi.mock("../api", () => ({
   api: {
     listAgents: () => listAgents(),
     createAgent: (input: unknown) => createAgent(input),
+    setup: () => setupFn(),
     setStatus: vi.fn(),
     deleteAgent: vi.fn(),
     streamChat: vi.fn(),
@@ -36,6 +38,13 @@ describe("App shell", () => {
   beforeEach(() => {
     listAgents.mockReset();
     createAgent.mockReset();
+    // Setup already complete, so these tests exercise the normal UI.
+    setupFn.mockReset().mockResolvedValue({
+      providers: [],
+      has_provider: true,
+      has_agents: true,
+      complete: true,
+    });
   });
 
   it("renders the roster from the API", async () => {

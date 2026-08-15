@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Agent, NewAgentInput } from "./types";
+import type { Agent, NewAgentInput, SetupStatus } from "./types";
 import type { View } from "./types-view";
 import { api } from "./api";
 import { applyTheme, loadTheme, type ThemeMode } from "./theme";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { NewAgentModal } from "./components/NewAgentModal";
-import { Placeholder } from "./views/Placeholder";
 import { AuditView } from "./views/AuditView";
 import { SkillsView } from "./views/SkillsView";
 import { RoutinesView } from "./views/RoutinesView";
+import { SettingsView } from "./views/SettingsView";
+import { SetupWizard } from "./views/SetupWizard";
 
 export function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -18,6 +19,9 @@ export function App() {
   const [modalOpen, setModalOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>("light");
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
+  // Dismissing lets you reach the normal UI mid-setup; it returns next load.
+  const [wizardDismissed, setWizardDismissed] = useState(false);
   // On phones the app is a single-pane messenger: the roster is home, and
   // opening an agent or a surface pushes it over the top with a back button.
   // On md+ both panes show side by side, as on desktop.
@@ -31,8 +35,9 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.listAgents();
+      const [list, setupStatus] = await Promise.all([api.listAgents(), api.setup()]);
       setAgents(list);
+      setSetup(setupStatus);
       setLoadError(null);
       setSelectedId((cur) => cur ?? list[0]?.id ?? null);
     } catch (e) {
@@ -59,6 +64,36 @@ export function App() {
   }
 
   const selected = agents.find((a) => a.id === selectedId) ?? null;
+
+  // Until there's a provider and an agent, setup is the whole app — there is
+  // nothing useful to show behind it, and no reason to send anyone to a terminal.
+  if (setup && !setup.complete && !wizardDismissed) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-hidden">
+        <SetupWizard
+          status={setup}
+          onChanged={refresh}
+          onNewAgent={() => setModalOpen(true)}
+        />
+        {setup.has_provider && (
+          <button
+            type="button"
+            onClick={() => setWizardDismissed(true)}
+            className="border-t border-hairline py-2 text-sm text-text-secondary"
+          >
+            Skip for now
+          </button>
+        )}
+        {modalOpen && (
+          <NewAgentModal
+            existing={agents}
+            onClose={() => setModalOpen(false)}
+            onCreate={createAgent}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full w-full overflow-hidden">
@@ -122,10 +157,7 @@ export function App() {
         {view === "routines" && <RoutinesView agents={agents} />}
         {view === "audit" && <AuditView agents={agents} />}
         {view === "settings" && (
-          <Placeholder
-            title="Settings"
-            blurb="Provider/key status and node health (your PC, phone, and peers) land alongside the deployment kit."
-          />
+          <SettingsView providers={setup?.providers ?? []} onChanged={refresh} />
         )}
       </main>
 

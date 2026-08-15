@@ -10,6 +10,33 @@ The always-on machine that hosts the agents, the dashboard, and the audit ledger
 - SSH access with a key.
 - Your Tailscale account.
 
+---
+
+## The short way
+
+Two commands. Everything else — API keys, ChatGPT sign-in, creating agents —
+happens **in the app**, not here.
+
+```bash
+git clone https://github.com/esrecon/recons-grok-bot /opt/recons/app
+sudo /opt/recons/app/scripts/vps-quickstart.sh
+```
+
+It installs the packages, sets the firewall to default-deny, joins your tailnet
+(you'll get a sign-in link), installs Hermes and the service units, builds the
+dashboard, starts the orchestrator, publishes it privately over HTTPS, and runs
+the security check. It finishes by printing your URL.
+
+Open that URL on any device on your tailnet and the app walks you through the
+rest. **You should not need to come back to this terminal.**
+
+If a step fails, or you'd rather do it piece by piece, the long way is below —
+it's the same work, spelled out.
+
+---
+
+## The long way
+
 ## 1. System prep
 
 Clone this repo onto the VPS, then:
@@ -51,32 +78,23 @@ sudo loginctl enable-linger "$USER"
 > before running it. Pin **≥ v0.20.1** — earlier versions carry patched CVEs
 > (see [60-security-hardening.md](60-security-hardening.md)).
 
-## 3. Fill in the secrets
+## 3. Secrets — nothing to do
 
-Edit `/opt/recons/shared/secrets.env` (it stays chmod 600). Every agent reads
-this one file, so a key added here is available to all of them.
+There is no file to edit. The orchestrator creates
+`/opt/recons/shared/secrets.env` (chmod 600) on first boot and generates the
+audit signing secret itself — that one is an internal secret between Hermes and
+the ledger, not an account credential, so you should never have to run
+`openssl rand` by hand.
 
-```bash
-# Generate the webhook signing secret:
-openssl rand -hex 32
-```
+Provider keys and logins are entered **in the app** (step 8), not here.
 
-Set `RECONS_WEBHOOK_SECRET` to that value — the audit ledger verifies every
-event Hermes sends against it. Provider keys are covered in
-[40-providers-and-tos.md](40-providers-and-tos.md); you can start with just Nous
-Portal and add the rest later.
+## 4. Providers — in the app
 
-## 4. Providers
-
-Follow [40-providers-and-tos.md](40-providers-and-tos.md) now, at least far
-enough to have one working provider. The short version:
-
-```bash
-hermes model          # pick "ChatGPT or Codex Subscription" → device-code login
-```
-
-That gives you the workhorse tier. Claude (lead tier) needs the wrapper service;
-Nous needs an API key in `secrets.env`.
+Skip ahead. Once the dashboard is up, its setup screen connects your providers:
+paste a Nous key, sign in with your ChatGPT subscription (the link and code
+appear in the app), and optionally add Claude. The background on each — and the
+honest terms-of-service position — is in
+[40-providers-and-tos.md](40-providers-and-tos.md).
 
 ## 5. Build the dashboard
 
@@ -108,10 +126,20 @@ It binds **loopback only**. Nothing is reachable yet — that's next.
 
 Go to **[15-tailscale.md](15-tailscale.md)**, then come back.
 
-## 8. Create your first agents
+## 8. Connect providers and create your first agents
 
-Open the dashboard, click **+**, and give the first agent a name and a one-line
-job. The first agent you create becomes the **lead**.
+Open the dashboard. On a fresh install it opens a two-step setup screen:
+
+1. **Connect a brain.** Paste a Nous API key, and/or click *Sign in with
+   ChatGPT* — the verification link and code appear right there, and the card
+   flips to **Connected** when you finish in the browser. Claude is optional and
+   can wait.
+2. **Hire your first teammate.** Name and a one-line job. The first agent you
+   create becomes the **lead**.
+
+Keys you enter are written to the shared secrets file by the server and are
+never shown again — the app only ever tells you whether a provider is connected.
+You can change providers later under **Settings**.
 
 Behind that one click, the orchestrator:
 
