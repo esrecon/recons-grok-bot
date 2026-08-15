@@ -49,16 +49,31 @@ transcript of every exchange** — and reach your phone as an installable PWA ov
 
 Read the docs in numeric order — they match the install order:
 
-1. `docs/00-overview.md` — architecture, threat model, conventions
-2. `docs/10-vps.md` — VPS + Hermes profiles + orchestrator + wrapper
-3. `docs/15-tailscale.md` — tailnet-only exposure + installing the PWA on your phone
-4. `docs/20-windows-pc.md` — your real-world PC as an A2A peer ("Deck") + logged-in Chrome
-5. `docs/30-phone.md` · `docs/40-providers-and-tos.md` · `docs/50-agents-a2a.md`
-6. `docs/60-security-hardening.md` — non-negotiable defaults
-7. `docs/99-acceptance-checklist.md` — prove it all works, tick by tick
+1. [docs/00-overview.md](docs/00-overview.md) — architecture, threat model, conventions
+2. [docs/10-vps.md](docs/10-vps.md) — VPS, Hermes, orchestrator, your first agents
+3. [docs/15-tailscale.md](docs/15-tailscale.md) — tailnet-only access + installing the PWA on Android
+4. [docs/20-windows-pc.md](docs/20-windows-pc.md) — your real PC as an A2A peer + logged-in Chrome
+5. [docs/30-phone.md](docs/30-phone.md) — phone access and messaging fallback
+6. [docs/40-providers-and-tos.md](docs/40-providers-and-tos.md) — Claude, ChatGPT, Nous, and the honest ToS position
+7. [docs/50-agents-a2a.md](docs/50-agents-a2a.md) — agent identity and how they talk
+8. [docs/60-security-hardening.md](docs/60-security-hardening.md) — the non-negotiable defaults, and why
+9. [docs/70-existing-hermes-and-buzz.md](docs/70-existing-hermes-and-buzz.md) — peer an existing Hermes; Buzz
+10. [docs/80-backup-update.md](docs/80-backup-update.md) — backups, restores, updates
+11. [docs/99-acceptance-checklist.md](docs/99-acceptance-checklist.md) — prove it all works, tick by tick
 
 Full deep-research findings (what Grok Bot is, why Hermes, the subscription ToS situation as of
-August 2026) live in `docs/00-research-report.md`.
+August 2026) live in [docs/00-research-report.md](docs/00-research-report.md).
+
+## Quick start
+
+```bash
+sudo ./scripts/vps-bootstrap.sh      # system prep: firewall, docker, tailscale
+./scripts/vps-bootstrap.sh --user    # hermes, uv, systemd units, secrets file
+sudo tailscale up && sudo tailscale serve --bg --https=443 http://127.0.0.1:8330
+./scripts/vps-verify.sh              # prove nothing is exposed
+```
+
+Then open `https://<your-magicdns-name>/` and click **+** to hire your first agent.
 
 ## Development
 

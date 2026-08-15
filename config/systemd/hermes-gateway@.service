@@ -1,0 +1,32 @@
+# One Hermes gateway per agent. `%i` is the agent id, so enabling
+# hermes-gateway@scout starts the agent whose HERMES_HOME is
+# /opt/recons/agents/scout/home. The orchestrator enables/stops these when you
+# create, pause or delete an agent in the dashboard.
+#
+# Install to ~/.config/systemd/user/ and run:
+#   systemctl --user daemon-reload
+#   sudo loginctl enable-linger $USER    # survive logout/reboot
+[Unit]
+Description=Hermes agent gateway (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Shared secrets first, then the per-agent env (HERMES_HOME, A2A tokens).
+EnvironmentFile=/opt/recons/shared/secrets.env
+EnvironmentFile=/opt/recons/agents/%i/service.env
+ExecStart=%h/.local/bin/hermes gateway
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the gateway needs its own state, nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ReadWritePaths=/opt/recons/agents/%i /opt/recons/shared
+
+[Install]
+WantedBy=default.target

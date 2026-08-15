@@ -41,9 +41,19 @@ else
   skip "scripts/validate-configs.py not present yet"
 fi
 
-section "Skill validator self-test"
+section "Skill validator self-test + vendored skills"
 if [ -f tools/teach-mode/validate_skill.py ]; then
-  python3 tools/teach-mode/validate_skill.py --self-test || FAILED=1
+  # Through the orchestrator venv so pyyaml is available.
+  if [ -f apps/orchestrator/pyproject.toml ]; then
+    RUN_PY=(uv run --frozen --project apps/orchestrator python)
+  else
+    RUN_PY=(python3)
+  fi
+  "${RUN_PY[@]}" tools/teach-mode/validate_skill.py --self-test || FAILED=1
+  # Every vendored skill must itself pass validation.
+  while IFS= read -r -d '' skill; do
+    "${RUN_PY[@]}" tools/teach-mode/validate_skill.py "$skill" || FAILED=1
+  done < <(find skills -name 'SKILL.md' -print0 2>/dev/null)
 else
   skip "tools/teach-mode not present yet"
 fi
