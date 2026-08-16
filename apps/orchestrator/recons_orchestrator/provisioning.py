@@ -14,6 +14,7 @@ step 5 goes through the injected ServiceManager so tests never touch systemd.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import subprocess
@@ -34,6 +35,24 @@ from .services import ServiceManager, SystemdServiceManager
 Clock = Callable[[], datetime]
 
 log = logging.getLogger("recons.provisioning")
+
+# Top-level keys config.yaml.j2 renders. Anything else in an adopted agent's
+# config is operator customisation the template cannot model (MCP servers,
+# extra peers, tool blocks) — captured into config-extras.yaml at promotion
+# instead of being dropped.
+TEMPLATE_TOP_LEVEL_KEYS = frozenset(
+    {
+        "soul_file",
+        "model",
+        "fallback_providers",
+        "skills",
+        "approvals",
+        "terminal",
+        "gateway",
+        "a2a_agents",
+        "webhooks",
+    }
+)
 
 
 def _utcnow() -> datetime:
@@ -358,6 +377,25 @@ class Provisioner:
         if (home / "config.yaml").is_file():
             shutil.copy2(home / "config.yaml", bak)
 
+        # Capture what the template can't model into config-extras.yaml so it
+        # survives every regeneration (the mesh re-appends that file to the
+        # generated config). Data folders the migration brought across get
+        # their paths rewritten from the stamp, so e.g. an MCP vault points at
+        # its new local copy instead of a directory on the old machine.
+        captured = {k: v for k, v in old_cfg.items() if k not in TEMPLATE_TOP_LEVEL_KEYS}
+        extras_file = self._s.config_extras(agent_id)
+        if captured and not extras_file.exists():
+            text = yaml.safe_dump(captured, sort_keys=False, default_flow_style=False)
+            for remote, local in self._migration_path_map(agent_id):
+                text = text.replace(remote, local)
+            extras_file.parent.mkdir(parents=True, exist_ok=True)
+            extras_file.write_text(
+                "# Captured from the pre-promotion config — user-owned from here on.\n"
+                "# The mesh appends this file verbatim to the generated config.yaml on\n"
+                "# every regeneration, so edits made here are durable.\n" + text,
+                "utf-8",
+            )
+
         # Capture the model it arrived with (same keys inherited_model reads),
         # so the rendered config keeps its brain instead of the tier constants.
         old_model = old_cfg.get("model") if isinstance(old_cfg.get("model"), dict) else {}
@@ -396,19 +434,12 @@ class Provisioner:
             except (subprocess.CalledProcessError, OSError):
                 log.warning("restart of %s after promotion failed", r.id, exc_info=True)
 
-        rendered: dict = {}
-        try:
-            loaded = yaml.safe_load((home / "config.yaml").read_text("utf-8"))
-            rendered = loaded if isinstance(loaded, dict) else {}
-        except (OSError, yaml.YAMLError):
-            pass
-        dropped = sorted(k for k in old_cfg if k not in rendered)
-
         return PromoteReport(
             record=self._roster.get(agent_id) or record,
             model_captured=model_captured,
             telegram_token_source=token_source,
-            dropped_config_keys=dropped,
+            captured_config_keys=sorted(captured),
+            extras_path=str(extras_file),
             backup_path=str(bak),
         )
 
@@ -526,6 +557,22 @@ class Provisioner:
         return record
 
     # -- helpers ---------------------------------------------------------------
+    def _migration_path_map(self, agent_id: str) -> list[tuple[str, str]]:
+        """(remote, local) path pairs for data folders the migration copied.
+
+        migrate-hermes.sh records them in the stamp file's also_paths; promote
+        uses them to rewrite paths inside captured config blocks."""
+        stamp = self._s.agents_dir / agent_id / ".migrate-hermes.json"
+        try:
+            data = json.loads(stamp.read_text("utf-8"))
+        except (OSError, ValueError):
+            return []
+        pairs: list[tuple[str, str]] = []
+        for entry in data.get("also_paths") or []:
+            if isinstance(entry, dict) and entry.get("remote") and entry.get("local"):
+                pairs.append((str(entry["remote"]), str(entry["local"])))
+        return pairs
+
     def _write_soul(self, record: AgentRecord) -> None:
         home = self._s.home_dir(record.id)
         home.mkdir(parents=True, exist_ok=True)

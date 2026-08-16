@@ -52,7 +52,7 @@ def test_promote_wires_mesh_telegram_and_keeps_model(
     assert rec.status is AgentStatus.PAUSED
     assert report.telegram_token_source == "extracted"
     assert report.model_captured is True
-    assert "my_custom_tweak" in report.dropped_config_keys
+    assert "my_custom_tweak" in report.captured_config_keys
 
     # Home relocated into the canonical layout, original config archived.
     new_home = settings.home_dir("hermes")
@@ -65,6 +65,11 @@ def test_promote_wires_mesh_telegram_and_keeps_model(
     assert cfg["model"]["default"] == "hermes-4-405b"  # kept its own brain
     assert "scout" in cfg["a2a_agents"]  # in the mesh now
     assert cfg["gateway"]["platforms"]["telegram"]["enabled"] is True
+    # Custom config was CAPTURED, not dropped: it lives in config-extras.yaml
+    # and still renders into the generated config.
+    assert cfg["my_custom_tweak"] == 7
+    assert settings.config_extras("hermes").is_file()
+    assert report.extras_path == str(settings.config_extras("hermes"))
 
     env = settings.service_env("hermes").read_text()
     assert "TELEGRAM_BOT_TOKEN=123456789:from-old-box" in env
@@ -148,6 +153,58 @@ def test_promote_without_telegram_still_joins_the_mesh(provisioner, settings, tm
     env = settings.service_env("hermes").read_text()
     assert "TELEGRAM_BOT_TOKEN" not in env
     assert "A2A_PEER_TOKENS" in env
+
+
+def test_promote_never_clobbers_an_existing_extras_file(
+    provisioner, settings, tmp_path
+):
+    home = _home(tmp_path, telegram_cfg=False)
+    provisioner.import_agent(home, name="Hermes")
+    extras = settings.config_extras("hermes")
+    extras.parent.mkdir(parents=True, exist_ok=True)
+    extras.write_text("my_pre_edit: true\n")
+
+    report = provisioner.promote_agent("hermes")
+
+    assert extras.read_text() == "my_pre_edit: true\n"  # user's file untouched
+    cfg = yaml.safe_load((settings.home_dir("hermes") / "config.yaml").read_text())
+    assert cfg["my_pre_edit"] is True  # rendered from the user's file
+    assert "my_custom_tweak" in report.captured_config_keys  # still reported
+    assert "my_custom_tweak" not in cfg  # but never written over user's edits
+
+
+def test_promote_rewrites_migrated_data_paths_in_captured_config(
+    provisioner, settings, tmp_path
+):
+    import json
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  provider: nous\n  default: hermes-4-405b\n"
+        "mcp:\n  servers:\n    obsidian:\n"
+        "      args: ['/root/obsidian-memory-vault']\n"
+    )
+    (home / "SOUL.md").write_text("# Hermes\n")
+    provisioner.import_agent(home, name="Hermes")
+
+    local_vault = settings.agents_dir / "hermes" / "data" / "obsidian-memory-vault"
+    stamp = settings.agents_dir / "hermes" / ".migrate-hermes.json"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(
+        json.dumps(
+            {
+                "also_paths": [
+                    {"remote": "/root/obsidian-memory-vault", "local": str(local_vault)}
+                ]
+            }
+        )
+    )
+
+    provisioner.promote_agent("hermes")
+
+    cfg = yaml.safe_load((settings.home_dir("hermes") / "config.yaml").read_text())
+    assert cfg["mcp"]["servers"]["obsidian"]["args"] == [str(local_vault)]
 
 
 def test_demote_restores_the_snapshot_state(provisioner, settings, services, tmp_path):

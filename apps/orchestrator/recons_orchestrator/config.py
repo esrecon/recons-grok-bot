@@ -123,5 +123,16 @@ class Settings:
         """Per-agent EnvironmentFile the systemd unit loads (HERMES_HOME, A2A tokens)."""
         return self.agents_dir / agent_id / "service.env"
 
+    def config_extras(self, agent_id: str) -> Path:
+        """User-owned YAML appended verbatim to the agent's generated config.
+
+        The sanctioned escape hatch for per-agent config the template doesn't
+        model (MCP servers, extra peers, tool blocks): it survives every
+        rewire because the mesh re-appends it on each regeneration. Lives
+        beside service.env — outside home/ — so migration re-syncs never
+        touch it either.
+        """
+        return self.agents_dir / agent_id / "config-extras.yaml"
+
     def unit_name(self, agent_id: str) -> str:
         return f"{self.service_template}{agent_id}.service"

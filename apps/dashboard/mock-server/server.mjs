@@ -466,7 +466,8 @@ const server = http.createServer(async (req, res) => {
           record: agent,
           model_captured: true,
           telegram_token_source: body.telegram_token ? "provided" : "extracted",
-          dropped_config_keys: [],
+          captured_config_keys: [],
+          extras_path: `/opt/recons/agents/${id}/config-extras.yaml`,
           backup_path: `/opt/recons/agents/${id}/home/config.yaml.pre-promote.bak`,
         });
       }

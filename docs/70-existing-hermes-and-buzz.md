@@ -94,6 +94,11 @@ Worth knowing while both copies are live:
 - **Live databases are copied consistently** via remote `sqlite3 ".backup"`
   when available (WAL-aware raw copy otherwise — accepted for interim
   snapshots, required-stopped at cutover grade).
+- **Folders outside the home travel too.** `--also <remote-path>` copies
+  extra data directories (an Obsidian vault an MCP server reads, say) into
+  `agents/<id>/data/`, and the stamp repeats them on every later sync.
+  Promotion rewrites the old paths to the new location inside any captured
+  config blocks.
 
 When you're ready to move the Telegram bot here (and make the migrated agent
 the head of staff), that is the **cutover**: stop the old gateway, run
@@ -102,7 +107,10 @@ ordered runbook is [35-telegram-cutover.md](35-telegram-cutover.md). One bot
 token supports exactly one live connection, so the old gateway is always
 stopped first. After promotion the agent is template-managed: the manual peer
 block above becomes obsolete for it, and `migrate-hermes.sh sync` refuses to
-overwrite it with stale old-machine state.
+overwrite it with stale old-machine state. Custom config blocks the template
+doesn't model survive promotion in `agents/<id>/config-extras.yaml` — the
+durable place for per-agent extras (extra A2A peers included), re-applied on
+every regeneration.
 
 Peering is less disruptive; consolidating means one machine to keep patched.
 
