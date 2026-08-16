@@ -13,6 +13,38 @@ RECONS_ROOT="${RECONS_ROOT:-/opt/recons}"
 
 [ -f "$ARCHIVE" ] || { echo "no such archive: $ARCHIVE" >&2; exit 1; }
 
+# systemd scope: read what bootstrap recorded — never re-detect (see update.sh
+# for why probing disagrees with itself). Works run as the operator or as root.
+systemd_scope() {
+  local scope
+  scope="$(cat "$RECONS_ROOT/systemd-scope" 2>/dev/null || true)"
+  case "$scope" in
+    user|system) printf '%s' "$scope" ;;
+    *) printf '%s' "${RECONS_SYSTEMD_SCOPE:-system}" ;;
+  esac
+}
+SCOPE_FLAG=""
+if [ "$(systemd_scope)" = "user" ]; then
+  SCOPE_FLAG="--user "
+fi
+TARGET_USER="$(stat -c '%U' "$RECONS_ROOT" 2>/dev/null || echo "${USER:-root}")"
+TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || id -u)"
+
+sctl() {  # systemctl in the recorded scope, reaching the owning user's manager
+  if [ "$(systemd_scope)" = "user" ]; then
+    if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
+      sudo -u "$TARGET_USER" -H \
+        env "XDG_RUNTIME_DIR=/run/user/$TARGET_UID" \
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$TARGET_UID/bus" \
+        systemctl --user "$@"
+    else
+      systemctl --user "$@"
+    fi
+  else
+    systemctl "$@"
+  fi
+}
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 PLAIN="$WORK/archive.tar.gz"
@@ -25,13 +57,15 @@ esac
 
 if [ "$MODE" = "--in-place" ]; then
   echo "== Stopping agents =="
-  systemctl --user list-units 'hermes-gateway@*' --no-legend 2>/dev/null \
+  echo "   scope: $(systemd_scope) (from $RECONS_ROOT/systemd-scope; owner: $TARGET_USER)"
+  sctl list-units 'hermes-gateway@*' --no-legend --plain \
     | awk '{print $1}' | while read -r unit; do
         if [ -n "$unit" ]; then
-          systemctl --user stop "$unit" || true
+          sctl stop "$unit" || echo "   WARNING: stop of $unit failed" >&2
         fi
-      done
-  systemctl --user stop recons-orchestrator.service 2>/dev/null || true
+      done || echo "   WARNING: could not list gateway units" >&2
+  sctl stop recons-orchestrator.service \
+    || echo "   WARNING: orchestrator stop failed (was it running?)" >&2
 
   echo "== Restoring into $RECONS_ROOT =="
   mkdir -p "$RECONS_ROOT"
@@ -43,9 +77,13 @@ if [ "$MODE" = "--in-place" ]; then
   find "$RECONS_ROOT/agents" -name '.migrate-hermes.json' -exec chmod 600 {} + 2>/dev/null || true
 
   echo "== Restarting =="
-  systemctl --user start recons-orchestrator.service 2>/dev/null || true
+  if ! sctl start recons-orchestrator.service; then
+    echo "FAILED to start the orchestrator after the restore." >&2
+    echo "Check: systemctl ${SCOPE_FLAG}status recons-orchestrator" >&2
+    exit 1
+  fi
   echo "Start each agent from the dashboard, or:"
-  echo "  systemctl --user start hermes-gateway@<agent>"
+  echo "  systemctl ${SCOPE_FLAG}start hermes-gateway@<agent>"
 else
   OUT="./restore-$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -p "$OUT"
