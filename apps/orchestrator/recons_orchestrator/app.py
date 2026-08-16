@@ -11,7 +11,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from pydantic import BaseModel
 
@@ -316,6 +316,43 @@ def create_app() -> FastAPI:
         except ProvisioningError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return JSONResponse(status_code=204, content=None)
+
+    # --- the dashboard itself -------------------------------------------------
+    # Registered last so every /api route above wins the match. This serves the
+    # built SPA: real files when they exist (assets, the service worker, the
+    # manifest, icons) and index.html for anything else, so client-side routes
+    # survive a refresh.
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_dashboard(
+        full_path: str, settings: Settings = Depends(get_settings)
+    ) -> FileResponse:
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="no such endpoint")
+
+        dist = settings.dashboard_dist
+        index = dist / "index.html"
+        if not index.is_file():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"The dashboard is not built at {dist}. Build it with: "
+                    "cd apps/dashboard && npm ci && npm run build — then copy "
+                    "dist/ there, or point RECONS_DASHBOARD_DIST at it."
+                ),
+            )
+
+        if full_path:
+            candidate = dist / full_path
+            try:
+                resolved = candidate.resolve()
+                # Refuse anything that escapes the dist directory.
+                resolved.relative_to(dist.resolve())
+                if resolved.is_file():
+                    return FileResponse(resolved)
+            except (ValueError, OSError):
+                pass  # traversal attempt or unreadable — fall through to index
+
+        return FileResponse(index)
 
     return app
 
