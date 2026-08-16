@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from recons_orchestrator import assist, avatars, team
+from recons_orchestrator import assist, avatars, chat, team
 from recons_orchestrator.app import (
     create_app,
     get_providers,
@@ -285,7 +285,7 @@ def test_improve_uses_hermes_cli_when_no_key_is_stored(two_agents, monkeypatch):
         seen.update(argv=argv, env=env)
         return SimpleNamespace(returncode=0, stdout="  Polished by Hermes.  \n", stderr="")
 
-    monkeypatch.setattr(assist.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(chat.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     monkeypatch.setattr(assist.subprocess, "run", fake_run)
     monkeypatch.setattr(
         assist.httpx, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("HTTP used"))
@@ -303,16 +303,39 @@ def test_improve_uses_hermes_cli_when_no_key_is_stored(two_agents, monkeypatch):
     assert seen["env"]["HERMES_HOME"]  # runs against the default home
 
 
-def test_improve_cli_failure_is_502(two_agents, monkeypatch):
+def test_improve_cli_failure_is_502_with_stderr(two_agents, monkeypatch):
     env = two_agents
-    monkeypatch.setattr(assist.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(chat.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     monkeypatch.setattr(
         assist.subprocess,
         "run",
-        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="auth expired: boom"),
     )
     resp = env.client.post("/api/assist/improve", json={"field": "name", "text": "x"})
     assert resp.status_code == 502
+    assert "boom" in resp.json()["detail"]  # the CLI's own words reach the UI
+
+
+def test_resolve_cmd_finds_the_cli_off_path(tmp_path, monkeypatch):
+    # A systemd unit's minimal PATH misses the venv entry point; resolve_cmd
+    # probes the known install locations and returns an absolute argv[0].
+    fake_bin = tmp_path / "venv-bin"
+    fake_bin.mkdir()
+    cli = fake_bin / "hermes"
+    cli.write_text("#!/bin/sh\n", "utf-8")
+    cli.chmod(0o755)
+
+    monkeypatch.setattr(chat.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(assist.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(chat, "_CLI_CANDIDATE_DIRS", (fake_bin,))
+    assert chat.resolve_cmd(["hermes", "-z", "hi"]) == [str(cli), "-z", "hi"]
+    assert assist.hermes_cli_available() is True
+
+    # Explicit paths and PATH-resolvable commands come back untouched.
+    assert chat.resolve_cmd(["/usr/bin/env", "x"]) == ["/usr/bin/env", "x"]
+    monkeypatch.setattr(chat, "_CLI_CANDIDATE_DIRS", ())
+    assert chat.resolve_cmd(["hermes"]) == ["hermes"]
+    assert assist.hermes_cli_available() is False
 
 
 def test_improve_falls_back_to_wrapper_then_503(two_agents, monkeypatch):
@@ -410,6 +433,64 @@ def test_avatar_response_format_retry_and_url_branch(two_agents, monkeypatch):
 def test_avatar_unknown_agent_404(env):
     assert env.client.post("/api/agents/ghost/avatar").status_code == 404
     assert env.client.get("/api/agents/ghost/avatar").status_code == 404
+
+
+def test_stale_stored_model_is_remapped(env, two_agents, monkeypatch):
+    # A preset once wrote grok-2-image; xAI retired it. The stored value heals
+    # at read time — reported by the settings API and used by generate().
+    env.secrets.set_many(
+        {"IMAGE_API_KEY": "img-1", "IMAGE_API_MODEL": "grok-2-image"}
+    )
+    assert env.client.get("/api/settings/image").json()["model"] == (
+        avatars.DEFAULT_IMAGE_MODEL
+    )
+
+    seen = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen["model"] = json["model"]
+        return FakeResponse(
+            json_data={"data": [{"b64_json": base64.b64encode(PNG_1PX).decode()}]}
+        )
+
+    monkeypatch.setattr(avatars.httpx, "post", fake_post)
+    assert env.client.post("/api/agents/recon/avatar").status_code == 200
+    assert seen["model"] == avatars.DEFAULT_IMAGE_MODEL
+
+
+def test_unknown_model_retries_once_with_default(env, two_agents, monkeypatch):
+    # A custom id the provider has since retired: 404 → one retry with the
+    # current default, and the upstream error text survives if that fails too.
+    env.secrets.set_many(
+        {"IMAGE_API_KEY": "img-1", "IMAGE_API_MODEL": "grok-9-imaginary"}
+    )
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json["model"])
+        if json["model"] == "grok-9-imaginary":
+            return FakeResponse(status_code=404, text='{"error":"model not found"}')
+        return FakeResponse(
+            json_data={"data": [{"b64_json": base64.b64encode(PNG_1PX).decode()}]}
+        )
+
+    monkeypatch.setattr(avatars.httpx, "post", fake_post)
+    assert env.client.post("/api/agents/recon/avatar").status_code == 200
+    assert calls == ["grok-9-imaginary", avatars.DEFAULT_IMAGE_MODEL]
+
+
+def test_image_error_carries_the_providers_words(env, two_agents, monkeypatch):
+    env.secrets.set_many({"IMAGE_API_KEY": "img-1"})
+    monkeypatch.setattr(
+        avatars.httpx,
+        "post",
+        lambda *a, **k: FakeResponse(
+            status_code=403, text='{"error":"credits exhausted, top up at console"}'
+        ),
+    )
+    resp = env.client.post("/api/agents/recon/avatar")
+    assert resp.status_code == 502
+    assert "credits exhausted" in resp.json()["detail"]
 
 
 # --- image settings -----------------------------------------------------------

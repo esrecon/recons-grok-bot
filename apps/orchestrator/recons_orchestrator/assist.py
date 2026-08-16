@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 
-from .chat import chat_command, chat_timeout
+from .chat import chat_command, chat_timeout, resolve_cmd
 from .config import TIERS
 from .secrets_store import SecretsStore
 
@@ -92,8 +92,20 @@ def wrapper_alive(secrets: SecretsStore) -> bool:
 
 
 def hermes_cli_available() -> bool:
-    """True when the chat command's binary is on the orchestrator's PATH."""
-    return shutil.which(chat_command("ping")[0]) is not None
+    """True when the chat command's binary is reachable from this process.
+
+    resolve_cmd covers the venv/symlink locations a systemd unit's minimal
+    PATH misses — the same lookup dashboard chat uses.
+    """
+    argv0 = resolve_cmd(chat_command("ping"))[0]
+    if "/" in argv0:
+        return os.access(argv0, os.X_OK)
+    return shutil.which(argv0) is not None
+
+
+def _stderr_tail(text: str) -> str:
+    tail = " ".join((text or "").split())
+    return tail[-200:].strip()
 
 
 def _improve_via_hermes(system: str, text: str) -> str:
@@ -106,7 +118,7 @@ def _improve_via_hermes(system: str, text: str) -> str:
     relies on (RECONS_CHAT_CMD overrides the command shape there and here).
     """
     prompt = f"{system}\n\nText to improve:\n{text}"
-    argv = chat_command(prompt)
+    argv = resolve_cmd(chat_command(prompt))
     env = dict(os.environ)
     env["HERMES_HOME"] = str(
         os.environ.get("HERMES_HOME", Path.home() / ".hermes")
@@ -131,7 +143,11 @@ def _improve_via_hermes(system: str, text: str) -> str:
     except OSError as exc:
         raise AssistError(502, f"Could not run the Hermes CLI: {exc}") from exc
     if proc.returncode != 0:
-        raise AssistError(502, f"The Hermes CLI failed (exit {proc.returncode}).")
+        tail = _stderr_tail(proc.stderr)
+        suffix = f": {tail}" if tail else "."
+        raise AssistError(
+            502, f"The Hermes CLI failed (exit {proc.returncode}){suffix}"
+        )
     return _ANSI_RE.sub("", proc.stdout or "")
 
 
