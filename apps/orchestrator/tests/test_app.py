@@ -62,3 +62,38 @@ def test_pause_resume_delete(client):
 
 def test_get_missing_agent_404(client):
     assert client.get("/api/agents/nope").status_code == 404
+
+
+def test_import_the_default_hermes_profile_by_name(client, tmp_path):
+    """The exact payload the dashboard sends for ~/.hermes (name "Hermes") must
+    import cleanly — this was rejected as a reserved name until the migration
+    work."""
+    from tests.fixtures import make_state_db
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  provider: nous\n  default: hermes-4-70b\n")
+    make_state_db(home / "state.db", agent="hermes", base_ts=1_786_000_000)
+
+    resp = client.post("/api/import", json={"home": str(home), "name": "Hermes"})
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["id"] == "hermes"
+    assert body["imported"] is True
+
+    # The copy's history is immediately readable through the API — the exact
+    # contract scripts/migrate-hermes.sh relies on after registering.
+    hist = client.get("/api/agents/hermes/history").json()
+    assert hist["messages"], "expected turns from the imported state.db"
+
+
+def test_pause_and_resume_of_imported_agents_conflict(client, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "SOUL.md").write_text("# Hermes\n")
+    assert (
+        client.post("/api/import", json={"home": str(home), "name": "Hermes"}).status_code
+        == 201
+    )
+    assert client.post("/api/agents/hermes/pause").status_code == 409
+    assert client.post("/api/agents/hermes/resume").status_code == 409

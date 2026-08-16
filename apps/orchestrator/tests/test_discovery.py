@@ -93,6 +93,75 @@ def test_import_of_missing_directory_is_refused(provisioner, tmp_path):
         provisioner.import_agent(tmp_path / "nope")
 
 
+def test_import_under_the_name_hermes_works(provisioner, tmp_path):
+    """The default ~/.hermes profile is labeled "Hermes" by discovery, and the
+    dashboard passes that name straight to the import endpoint. It must not be
+    rejected as reserved — that made the most common import impossible."""
+    home = _make_home(tmp_path / ".hermes", name="Hermes")
+    rec = provisioner.import_agent(home, name="Hermes")
+    assert rec.id == "hermes"
+    assert rec.name == "Hermes"
+    assert rec.imported is True
+
+
+def test_import_name_falls_back_to_the_home_directory_name(provisioner, tmp_path):
+    """With no explicit name, a home named ".hermes" lands as id "hermes"."""
+    home = _make_home(tmp_path / ".hermes", name="Hermes", soul=False)
+    rec = provisioner.import_agent(home)
+    assert rec.id == "hermes"
+
+
+def test_removing_another_agent_never_touches_an_imported_units(
+    provisioner, tmp_path
+):
+    """Deleting any agent restarts the remaining peers — but an imported agent
+    has no unit here, and "restarting" one would actually START a gateway
+    against a home this platform does not manage."""
+    from recons_orchestrator.models import AgentSpec
+
+    home = _make_home(tmp_path / ".hermes", name="Hermes")
+    provisioner.import_agent(home, name="Hermes")
+    provisioner.create_agent(AgentSpec(name="Scout", role="Research"))
+    provisioner.create_agent(AgentSpec(name="Clerk", role="Admin"))
+
+    services = provisioner._services  # RecordingServiceManager from the fixture
+    services.calls.clear()
+    provisioner.remove_agent("scout")
+
+    hermes_unit_calls = [c for c in services.calls if "hermes-gateway@hermes" in c[1]]
+    assert hermes_unit_calls == []
+    assert {a.id for a in provisioner.list_agents()} == {"hermes", "clerk"}
+
+
+def test_removing_an_imported_agent_touches_no_services(provisioner, tmp_path):
+    home = _make_home(tmp_path / ".hermes", name="Hermes")
+    provisioner.import_agent(home, name="Hermes")
+
+    services = provisioner._services
+    services.calls.clear()
+    provisioner.remove_agent("hermes")
+
+    assert services.calls == []
+    assert provisioner.get_agent("hermes") is None
+    # Non-destructive to the end: the home is left on disk.
+    assert (home / "config.yaml").exists()
+
+
+def test_pause_and_resume_of_an_imported_agent_are_refused(provisioner, tmp_path):
+    from recons_orchestrator.models import AgentStatus
+    from recons_orchestrator.provisioning import ImportedAgentError
+
+    home = _make_home(tmp_path / ".hermes", name="Hermes")
+    provisioner.import_agent(home, name="Hermes")
+
+    with pytest.raises(ImportedAgentError):
+        provisioner.set_status("hermes", AgentStatus.PAUSED)
+    with pytest.raises(ImportedAgentError):
+        provisioner.set_status("hermes", AgentStatus.RUNNING)
+    # And nothing was asked of systemd.
+    assert provisioner._services.calls == []
+
+
 def test_creating_a_new_agent_never_rewrites_an_imported_one(provisioner, tmp_path):
     from recons_orchestrator.models import AgentSpec
 

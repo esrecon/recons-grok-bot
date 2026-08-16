@@ -24,7 +24,14 @@ class AgentStatus(str, Enum):
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_RESERVED = frozenset({"shared", "roster", "all", "new", "api", "hermes"})
+# Reserved ids: "shared" and "roster" collide with the $RECONS_ROOT layout
+# (shared/, roster.json) and "shared" doubles as a skill-source label; "api" is
+# special-cased by the SPA catch-all route; "all" and "new" are held back for
+# future collective endpoints. "hermes" is deliberately NOT reserved: agents
+# live under agents/<id> (never ~/.hermes), and the default Hermes profile is
+# discovered under exactly that name — reserving it made the most common
+# import (your own ~/.hermes agent) impossible.
+_RESERVED = frozenset({"shared", "roster", "all", "new", "api"})
 
 
 def slugify(name: str) -> str:

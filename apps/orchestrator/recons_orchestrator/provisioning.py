@@ -14,6 +14,7 @@ step 5 goes through the injected ServiceManager so tests never touch systemd.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,8 @@ from .services import ServiceManager, SystemdServiceManager
 
 Clock = Callable[[], datetime]
 
+log = logging.getLogger("recons.provisioning")
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -36,6 +39,16 @@ def _utcnow() -> datetime:
 
 class ProvisioningError(RuntimeError):
     pass
+
+
+class ImportedAgentError(ProvisioningError):
+    """A lifecycle action needed systemd, but the agent is imported.
+
+    Imported agents own their homes and (until promoted) run outside this
+    platform's units, so pausing/resuming their gateway here is meaningless —
+    and starting one could grab a messaging channel the original machine is
+    still serving.
+    """
 
 
 def _service_error_detail(exc: Exception) -> str:
@@ -179,13 +192,24 @@ class Provisioner:
         record = self._roster.get(agent_id)
         if record is None:
             raise ProvisioningError(f"no such agent: {agent_id}")
-        self._services.disable(self._s.unit_name(agent_id))
+        if not record.imported:
+            # Imported agents never had a unit enabled here — nothing to disable.
+            self._services.disable(self._s.unit_name(agent_id))
         self._roster.remove(agent_id)
         # Rewire remaining agents so they drop the removed peer.
         remaining = self._roster.load()
         self._mesh.rewire(remaining)
         for r in remaining:
-            self._services.restart(self._s.unit_name(r.id))
+            if r.imported:
+                # Same guard as create_agent: "restarting" an imported agent's
+                # unit would actually START one against a home we don't manage.
+                continue
+            try:
+                self._services.restart(self._s.unit_name(r.id))
+            except (subprocess.CalledProcessError, OSError):
+                # The roster change is already durable; one failed restart must
+                # not abort the remaining peers or surface as a 500.
+                log.warning("restart of %s after removal failed", r.id, exc_info=True)
         # Leave the agent's HERMES_HOME on disk (transcripts are business data);
         # the runbook covers archival deletion. We only remove it from the mesh.
 
@@ -193,6 +217,12 @@ class Provisioner:
         record = self._roster.get(agent_id)
         if record is None:
             raise ProvisioningError(f"no such agent: {agent_id}")
+        if record.imported:
+            raise ImportedAgentError(
+                f"'{record.name}' is imported — its gateway runs outside this "
+                "platform until promotion, so there is nothing to pause or "
+                "resume here (see docs/70)"
+            )
         if status is AgentStatus.PAUSED:
             self._services.stop(self._s.unit_name(agent_id))
         elif status is AgentStatus.RUNNING:

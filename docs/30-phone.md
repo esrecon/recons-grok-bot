@@ -41,6 +41,12 @@ TELEGRAM_ALLOWED_USERS=<your-telegram-user-id>
 Never set `GATEWAY_ALLOW_ALL_USERS=true`. Pair your account with
 `hermes pairing approve telegram <CODE>`.
 
+> Already have a Telegram-connected Hermes on another machine? Don't set up a
+> second bot — migrate the agent here ([70-existing-hermes-and-buzz.md](70-existing-hermes-and-buzz.md))
+> and move the bot at cutover ([35-telegram-cutover.md](35-telegram-cutover.md)).
+> One bot token supports only one live connection, so the old gateway is
+> stopped before the bot is enabled here.
+
 Channel messages carry the same approval prompts, and voice notes are
 transcribed. Each agent can have its own bot, or one bot can front the lead
 agent.

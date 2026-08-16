@@ -27,7 +27,7 @@ from .discovery import discover
 from .ledger import Ledger
 from .models import AgentRecord, AgentSpec, AgentStatus
 from .providers import ProviderService
-from .provisioning import Provisioner, ProvisioningError
+from .provisioning import ImportedAgentError, Provisioner, ProvisioningError
 from .routines import RoutineStore
 from .secrets_store import SecretsError, SecretsStore
 from .skills import SkillLibrary
@@ -471,6 +471,8 @@ def create_app() -> FastAPI:
 def _set_status(prov: Provisioner, agent_id: str, status: AgentStatus) -> AgentRecord:
     try:
         return prov.set_status(agent_id, status)
+    except ImportedAgentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProvisioningError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

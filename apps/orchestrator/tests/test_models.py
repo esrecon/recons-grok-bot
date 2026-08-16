@@ -14,6 +14,9 @@ from recons_orchestrator.models import AgentSpec, ModelTier, slugify
         ("Front Desk", "front-desk"),
         ("Bot #2!", "bot-2"),
         ("  Spaced  Out  ", "spaced-out"),
+        # Not reserved: the default Hermes profile is discovered under exactly
+        # this name, and it must be importable (see models._RESERVED comment).
+        ("Hermes", "hermes"),
     ],
 )
 def test_slugify(name, expected):
