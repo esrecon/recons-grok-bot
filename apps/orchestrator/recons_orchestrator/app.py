@@ -11,10 +11,16 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 
 from pydantic import BaseModel
 
+from .chat import ChatBackend
 from .config import Settings
 from .discovery import discover
 from .ledger import Ledger
@@ -74,6 +80,10 @@ class ImportInput(BaseModel):
     home: str
     name: str | None = None
     role: str = ""
+
+
+class MessageInput(BaseModel):
+    text: str
 
 
 @asynccontextmanager
@@ -217,6 +227,34 @@ def create_app() -> FastAPI:
         body = await request.body()
         status, payload = receiver().handle(body, dict(request.headers))
         return JSONResponse(status_code=status, content=payload)
+
+    # --- chat: one turn with an agent, streamed as SSE ------------------------
+    @app.post("/api/agents/{agent_id}/messages")
+    def send_message(
+        agent_id: str,
+        body: MessageInput,
+        prov: Provisioner = Depends(get_provisioner),
+        settings: Settings = Depends(get_settings),
+    ) -> StreamingResponse:
+        record = prov.get_agent(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        if not body.text.strip():
+            raise HTTPException(status_code=422, detail="message must not be empty")
+
+        backend = ChatBackend(settings)
+
+        def frames():
+            import json as _json
+
+            for event in backend.stream(record, body.text):
+                yield f"data: {_json.dumps(event)}\n\n"
+
+        return StreamingResponse(
+            frames(),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+        )
 
     # --- importing agents that already exist on this machine ------------------
     @app.get("/api/import/candidates")

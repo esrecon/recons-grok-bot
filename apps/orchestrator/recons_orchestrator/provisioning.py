@@ -100,6 +100,12 @@ class Provisioner:
         # clobbered by later rewires.
         self._write_soul(record)
 
+        # Agents share credentials by design ("share all API keys"): subscription
+        # logins (Codex, Nous OAuth) live in the default HERMES_HOME's auth
+        # store, so each agent home gets a symlink to it. A symlink, not a copy:
+        # refreshed tokens stay shared, and revoking once revokes everywhere.
+        self._link_shared_auth(record)
+
         # Persist roster BEFORE wiring so a failure can't leave orphaned config
         # that the roster doesn't know about.
         self._roster.upsert(record)
@@ -208,6 +214,11 @@ class Provisioner:
             personality=record.personality.strip(),
         )
         soul.write_text(rendered, "utf-8")
+
+    def _link_shared_auth(self, record: AgentRecord) -> None:
+        from .chat import ensure_shared_auth
+
+        ensure_shared_auth(self._s.home_dir(record.id))
 
     def _ensure_shared_layout(self) -> None:
         self._s.shared_skills_dir.mkdir(parents=True, exist_ok=True)
