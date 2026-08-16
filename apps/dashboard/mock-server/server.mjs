@@ -85,7 +85,7 @@ function defaultSoul(agent) {
   );
 }
 let customModels = [];
-const IMAGE_DEFAULTS = { base_url: "https://api.x.ai/v1", model: "grok-2-image" };
+const IMAGE_DEFAULTS = { base_url: "https://api.x.ai/v1", model: "grok-imagine-image-2.0" };
 // Seeded with a key (like the providers) so headshot generation works in e2e.
 let imageState = { key: fresh ? null : "seeded", ...IMAGE_DEFAULTS };
 let avatarSeq = 100;

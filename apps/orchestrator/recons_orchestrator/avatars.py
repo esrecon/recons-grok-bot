@@ -25,7 +25,16 @@ from .config import Settings
 from .secrets_store import SecretsStore
 
 DEFAULT_IMAGE_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_IMAGE_MODEL = "grok-2-image"  # VERIFY against the provider's model list
+DEFAULT_IMAGE_MODEL = "grok-imagine-image-2.0"  # docs.x.ai current, Aug 2026
+
+# Ids providers have retired since a preset/key stored them, remapped at read
+# time so a stale stored value heals without the operator touching Settings.
+# xAI retired the grok-2-image line and grok-imagine-image-pro on 2026-05-15.
+STALE_MODELS = {
+    "grok-2-image": "grok-imagine-image-2.0",
+    "grok-2-image-1212": "grok-imagine-image-2.0",
+    "grok-imagine-image-pro": "grok-imagine-image-quality",
+}
 
 
 class AvatarError(RuntimeError):
@@ -59,11 +68,21 @@ def build_prompt(name: str, role: str) -> str:
 
 def settings_of(secrets: SecretsStore) -> dict:
     """The image-generation settings as the API reports them (key never leaves)."""
+    model = secrets.get("IMAGE_API_MODEL") or DEFAULT_IMAGE_MODEL
     return {
         "key_set": secrets.is_set("IMAGE_API_KEY"),
         "base_url": secrets.get("IMAGE_API_BASE_URL") or DEFAULT_IMAGE_BASE_URL,
-        "model": secrets.get("IMAGE_API_MODEL") or DEFAULT_IMAGE_MODEL,
+        "model": STALE_MODELS.get(model, model),
     }
+
+
+def _error_detail(resp: httpx.Response) -> str:
+    """Status + the provider's own words, so a failure diagnoses itself."""
+    body = " ".join((resp.text or "").split())
+    if len(body) > 200:
+        body = body[:200] + "…"
+    suffix = f": {body}" if body else "."
+    return f"The image API returned an error ({resp.status_code}){suffix}"
 
 
 def _request(base: str, key: str, payload: dict) -> httpx.Response:
@@ -98,10 +117,16 @@ def generate(secrets: SecretsStore, name: str, role: str) -> bytes:
     if resp.status_code == 400 and "response_format" in resp.text:
         payload.pop("response_format")
         resp = _request(base, key, payload)
+    if (
+        resp.status_code == 404
+        or (resp.status_code == 400 and "model" in (resp.text or "").lower())
+    ) and payload["model"] != DEFAULT_IMAGE_MODEL:
+        # The stored model id may have been retired since it was saved (see
+        # STALE_MODELS); one retry with the current default before giving up.
+        payload["model"] = DEFAULT_IMAGE_MODEL
+        resp = _request(base, key, payload)
     if resp.status_code >= 400:
-        raise AvatarError(
-            502, f"The image API returned an error ({resp.status_code})."
-        )
+        raise AvatarError(502, _error_detail(resp))
 
     try:
         item = resp.json()["data"][0]

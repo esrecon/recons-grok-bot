@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -86,6 +87,36 @@ def chat_command(text: str) -> list[str]:
     return argv
 
 
+# Where the Hermes CLI actually lives when it isn't on the service's PATH:
+# the installer's venv entry point, then the per-user and system locations
+# `hermes doctor --fix` maintains. systemd units get a minimal PATH, so a CLI
+# a login shell finds fine can be invisible to which() here — observed in the
+# field as "Could not run `hermes`" from a box where root ran it daily.
+_CLI_CANDIDATE_DIRS = (
+    Path("/usr/local/lib/hermes-agent/venv/bin"),
+    Path.home() / ".local/bin",
+    Path("/usr/local/bin"),
+)
+
+
+def resolve_cmd(argv: list[str]) -> list[str]:
+    """argv with argv[0] made absolute when it can be found.
+
+    Explicit paths are respected; a bare command is looked up on PATH first,
+    then in the known install locations. Unresolvable commands come back
+    unchanged so callers keep their friendly is-it-installed error paths.
+    """
+    if not argv or "/" in argv[0]:
+        return argv
+    if shutil.which(argv[0]):
+        return argv
+    for directory in _CLI_CANDIDATE_DIRS:
+        candidate = directory / argv[0]
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate), *argv[1:]]
+    return argv
+
+
 def chat_timeout() -> float:
     try:
         return float(os.environ.get("RECONS_CHAT_TIMEOUT", "300"))
@@ -102,7 +133,7 @@ class ChatBackend:
 
     def stream(self, record: AgentRecord, text: str) -> Iterator[dict[str, Any]]:
         """Run one chat turn; yield ChatEvent dicts, ending with done/error."""
-        argv = chat_command(text)
+        argv = resolve_cmd(chat_command(text))
         agent_home = self._agent_home(record)
         if not record.imported:
             # Imported agents own their homes; we never write into those.

@@ -3,11 +3,15 @@ import type { ImageSettings } from "../types";
 import { api } from "../api";
 
 const PRESETS = [
-  { label: "xAI Grok", base_url: "https://api.x.ai/v1", model: "grok-2-image" },
+  {
+    label: "xAI Grok",
+    base_url: "https://api.x.ai/v1",
+    model: "grok-imagine-image-2.0",
+  },
   {
     label: "OpenAI",
     base_url: "https://api.openai.com/v1",
-    model: "gpt-image-1",
+    model: "gpt-image-2",
   },
 ];
 
