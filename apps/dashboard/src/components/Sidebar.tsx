@@ -76,6 +76,7 @@ export function Sidebar({
                 status={a.status}
                 title={a.name}
                 size={38}
+                imageVersion={a.avatar_version}
               />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-1.5">
@@ -100,6 +101,7 @@ export function Sidebar({
       <footer className="border-t border-hairline p-2">
         <SideNavItem label="Skills" icon="◇" active={view === "skills"} onClick={() => onNavigate("skills")} />
         <SideNavItem label="Routines" icon="◷" active={view === "routines"} onClick={() => onNavigate("routines")} />
+        <SideNavItem label="Customize" icon="✎" active={view === "customize"} onClick={() => onNavigate("customize")} />
         <SideNavItem label="Audit log" icon="▦" active={view === "audit"} onClick={() => onNavigate("audit")} />
         <SideNavItem label="Settings" icon="⚙" active={view === "settings"} onClick={() => onNavigate("settings")} />
       </footer>

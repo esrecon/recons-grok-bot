@@ -17,6 +17,12 @@ export interface Agent {
   // Adopted from an existing Hermes install: owns its home and, until
   // promoted, runs its gateway outside this platform.
   imported?: boolean;
+  // Explicit model override (Customize tab / captured at promotion). Both or
+  // neither; null means "the tier's default".
+  model_provider?: string | null;
+  model_name?: string | null;
+  // Cache-buster for the generated headshot; null/absent = no image yet.
+  avatar_version?: number | null;
 }
 
 export interface NewAgentInput {
@@ -132,6 +138,25 @@ export interface Routine {
   enabled: boolean;
   deliver?: string | null;
 }
+
+// One selectable model in the Customize tab's dropdown (/api/models).
+export interface ModelOption {
+  provider: string;
+  model: string;
+  label: string;
+  tier: ModelTier | null;
+  source: "tier" | "custom";
+  available: boolean;
+}
+
+// Image-generation settings (write-only key, as everywhere).
+export interface ImageSettings {
+  key_set: boolean;
+  base_url: string;
+  model: string;
+}
+
+export type ImproveField = "name" | "role" | "personality" | "soul";
 
 export interface ChatMessage {
   id: string;

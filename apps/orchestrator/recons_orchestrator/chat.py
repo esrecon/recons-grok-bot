@@ -30,6 +30,7 @@ from typing import Any
 
 from .config import Settings
 from .models import AgentRecord
+from .secrets_store import SecretsStore
 
 log = logging.getLogger("recons.chat")
 
@@ -108,6 +109,14 @@ class ChatBackend:
             ensure_shared_auth(agent_home)
 
         env = dict(os.environ)
+        # Keys saved from the dashboard after the orchestrator started aren't
+        # in its inherited environment (systemd loads secrets.env at unit
+        # start). Overlay the file so chat sees the same credentials a freshly
+        # restarted gateway would.
+        try:
+            env.update(SecretsStore(self._s.shared_secrets_env).as_env())
+        except OSError:
+            pass
         env["HERMES_HOME"] = str(agent_home)
         # Persuade the child to behave like a program, not a terminal app:
         # unbuffered output (a pipe otherwise block-buffers, which reads as "no

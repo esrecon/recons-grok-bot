@@ -9,6 +9,7 @@ import { NewAgentModal } from "./components/NewAgentModal";
 import { AuditView } from "./views/AuditView";
 import { SkillsView } from "./views/SkillsView";
 import { RoutinesView } from "./views/RoutinesView";
+import { CustomizeView } from "./views/CustomizeView";
 import { SettingsView } from "./views/SettingsView";
 import { SetupWizard } from "./views/SetupWizard";
 
@@ -155,6 +156,7 @@ export function App() {
 
         {view === "skills" && <SkillsView agents={agents} />}
         {view === "routines" && <RoutinesView agents={agents} />}
+        {view === "customize" && <CustomizeView agents={agents} onChanged={refresh} />}
         {view === "audit" && <AuditView agents={agents} />}
         {view === "settings" && (
           <SettingsView providers={setup?.providers ?? []} agents={agents} onChanged={refresh} />

@@ -87,4 +87,43 @@ test.describe("desktop", () => {
 
     await expect(page.getByTestId("routine-list").getByText("Check stock levels")).toBeVisible();
   });
+
+  test("customize edits an agent, improves text and paints a headshot", async ({ page }) => {
+    await page.goto("/");
+    // Only the nav item exists before the view mounts, so the bare text is
+    // unambiguous here (the view's own header appears after the click).
+    await page.getByText("Customize").click();
+
+    // Pick Scout in the agent chips.
+    await page.getByLabel("Customize Scout").click();
+    const jobRole = page.getByLabel("Job role", { exact: true });
+    await expect(jobRole).toHaveValue("Researches suppliers and drafts outreach");
+
+    // Save an edited job role; the roster shows it after the refresh.
+    await jobRole.fill("Sources rare console parts");
+    await page.getByLabel("Save identity").click();
+    await expect(
+      page.getByLabel("Agents").getByText("Sources rare console parts"),
+    ).toBeVisible();
+
+    // ✨ Improve rewrites a field through the assist endpoint.
+    const personality = page.getByLabel("Personality", { exact: true });
+    await personality.fill("be nice");
+    await page.getByLabel("Improve personality").click();
+    await expect(personality).toHaveValue("be nice (polished)");
+
+    // Generate the headshot: the button flips to Regenerate and the picker
+    // chip swaps the blob for the generated image.
+    await page.getByRole("button", { name: "Generate headshot" }).click();
+    await expect(
+      page.getByRole("button", { name: "Regenerate headshot" }),
+    ).toBeVisible();
+    await expect(page.getByAltText("Scout avatar").first()).toBeVisible();
+
+    // Choose a different model; after the save the roster round-trips it and
+    // the Save button disables again (selection == saved value).
+    await page.getByLabel("Model", { exact: true }).selectOption("nous|hermes-4-70b");
+    await page.getByLabel("Save model").click();
+    await expect(page.getByLabel("Save model")).toBeDisabled();
+  });
 });

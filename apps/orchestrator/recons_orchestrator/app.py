@@ -9,7 +9,10 @@ an operator login sits in front (Phase 4).
 from __future__ import annotations
 
 import logging
+import re
+import time
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
@@ -19,13 +22,14 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
+from . import assist, avatars, custom_models
 from .chat import ChatBackend
-from .config import Settings
+from .config import TIERS, Settings, inherited_model
 from .discovery import discover
 from .ledger import Ledger
-from .models import AgentRecord, AgentSpec, AgentStatus, PromoteReport
+from .models import AgentRecord, AgentSpec, AgentStatus, PromoteReport, slugify
 from .providers import ProviderService
 from .provisioning import ImportedAgentError, Provisioner, ProvisioningError
 from .routines import RoutineStore
@@ -98,6 +102,69 @@ class TelegramInput(BaseModel):
 
 class MessageInput(BaseModel):
     text: str
+
+
+class AgentPatch(BaseModel):
+    """PATCH /api/agents/{id} — every field optional; absent means unchanged.
+
+    Limits and validators mirror AgentSpec so an edit can't produce a record
+    that create would have refused. model_provider/model_name travel as a
+    pair; both as empty strings resets the agent to its tier's default."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=48)
+    role: str | None = Field(default=None, min_length=1, max_length=120)
+    personality: str | None = Field(default=None, max_length=2000)
+    avatar_color: str | None = None
+    model_provider: str | None = None
+    model_name: str | None = None
+
+    @field_validator("avatar_color")
+    @classmethod
+    def _check_color(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+            raise ValueError("avatar_color must be a #rrggbb hex string")
+        return v.lower()
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        slugify(v)  # same "usable display name" rule as create
+        return v.strip()
+
+
+class SoulInput(BaseModel):
+    content: str = Field(max_length=200_000)
+
+
+class AgentContext(BaseModel):
+    name: str = ""
+    role: str = ""
+
+
+class ImproveInput(BaseModel):
+    field: Literal["name", "role", "personality", "soul"]
+    text: str = Field(min_length=1, max_length=200_000)
+    agent_context: AgentContext = AgentContext()
+
+
+class ImageSettingsInput(BaseModel):
+    """PUT /api/settings/image — provided fields are written; "" clears one
+    back to its default. The key itself is write-only, as everywhere."""
+
+    key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+
+
+class CustomModelInput(BaseModel):
+    label: str = Field(min_length=1, max_length=48)
+    base_url: str = Field(min_length=1, max_length=200)
+    model: str = Field(min_length=1, max_length=100)
+    api_key: str = Field(min_length=1)
 
 
 @asynccontextmanager
@@ -525,6 +592,236 @@ def create_app() -> FastAPI:
         except ProvisioningError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return JSONResponse(status_code=204, content=None)
+
+    # --- customize: identity, soul, avatar, model -----------------------------
+    @app.patch("/api/agents/{agent_id}", response_model=AgentRecord)
+    def update_agent(
+        agent_id: str, body: AgentPatch, prov: Provisioner = Depends(get_provisioner)
+    ) -> AgentRecord:
+        """Edit name/role/personality/colour/model. The id never changes —
+        it is load-bearing (paths, unit names, A2A peers), so renames are
+        display-only."""
+        try:
+            return prov.update_agent(
+                agent_id,
+                name=body.name,
+                role=body.role,
+                personality=body.personality,
+                avatar_color=body.avatar_color,
+                model_provider=body.model_provider,
+                model_name=body.model_name,
+            )
+        except ImportedAgentError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ProvisioningError as exc:
+            detail = str(exc)
+            if "no such agent" in detail:
+                status = 404
+            elif "already exists" in detail:
+                status = 409
+            else:
+                status = 400
+            raise HTTPException(status_code=status, detail=detail) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/agents/{agent_id}/soul")
+    def get_soul(agent_id: str, prov: Provisioner = Depends(get_provisioner)) -> dict:
+        try:
+            content, exists = prov.read_soul(agent_id)
+        except ProvisioningError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"content": content, "exists": exists}
+
+    @app.put("/api/agents/{agent_id}/soul")
+    def put_soul(
+        agent_id: str, body: SoulInput, prov: Provisioner = Depends(get_provisioner)
+    ) -> dict:
+        """Save SOUL.md. The managed team fence is repaired server-side, so
+        the response content is the file as actually written."""
+        try:
+            return {"content": prov.write_soul(agent_id, body.content)}
+        except ProvisioningError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"could not write SOUL.md: {exc}"
+            ) from exc
+
+    @app.post("/api/agents/{agent_id}/avatar", response_model=AgentRecord)
+    def generate_avatar(
+        agent_id: str,
+        prov: Provisioner = Depends(get_provisioner),
+        settings: Settings = Depends(get_settings),
+        secrets: SecretsStore = Depends(get_secrets),
+    ) -> AgentRecord:
+        """Generate the Pixar-style headshot from the agent's name + role."""
+        record = prov.get_agent(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        try:
+            data = avatars.generate(secrets, record.name, record.role)
+        except avatars.AvatarError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        path = avatars.avatar_path(settings, agent_id)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"could not save the avatar: {exc}"
+            ) from exc
+        return prov.set_avatar_version(agent_id, int(time.time()))
+
+    @app.get("/api/agents/{agent_id}/avatar")
+    def get_avatar(
+        agent_id: str,
+        prov: Provisioner = Depends(get_provisioner),
+        settings: Settings = Depends(get_settings),
+    ) -> FileResponse:
+        if prov.get_agent(agent_id) is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        path = avatars.avatar_path(settings, agent_id)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="no generated avatar")
+        with path.open("rb") as fh:
+            head = fh.read(16)
+        # Immutable is safe: the URL carries ?v=<avatar_version> so a regenerate
+        # changes the URL, never the cached body.
+        return FileResponse(
+            path,
+            media_type=avatars.media_type_of(head),
+            headers={"cache-control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.post("/api/assist/improve")
+    def improve_text(
+        body: ImproveInput, secrets: SecretsStore = Depends(get_secrets)
+    ) -> dict:
+        """The ✨ Improve button: rewrite one field's text via the cheap tier."""
+        try:
+            improved = assist.improve(
+                secrets,
+                body.field,
+                body.text,
+                agent_name=body.agent_context.name,
+                agent_role=body.agent_context.role,
+            )
+        except assist.AssistError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        return {"text": improved}
+
+    @app.get("/api/settings/image")
+    def image_settings(secrets: SecretsStore = Depends(get_secrets)) -> dict:
+        return avatars.settings_of(secrets)
+
+    @app.put("/api/settings/image")
+    def set_image_settings(
+        body: ImageSettingsInput, secrets: SecretsStore = Depends(get_secrets)
+    ) -> dict:
+        values: dict[str, str] = {}
+        if body.key is not None:
+            values["IMAGE_API_KEY"] = body.key.strip()
+        if body.base_url is not None:
+            values["IMAGE_API_BASE_URL"] = body.base_url.strip().rstrip("/")
+        if body.model is not None:
+            values["IMAGE_API_MODEL"] = body.model.strip()
+        try:
+            if values:
+                secrets.set_many(values)
+        except SecretsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return avatars.settings_of(secrets)
+
+    @app.get("/api/models")
+    def list_models(
+        settings: Settings = Depends(get_settings),
+        secrets: SecretsStore = Depends(get_secrets),
+        providers: ProviderService = Depends(get_providers),
+    ) -> dict:
+        """Every model an agent could run on: the three tiers (availability
+        from the provider statuses) plus operator-registered custom entries."""
+        state = {s["id"]: s["state"] for s in (p.to_json() for p in providers.statuses())}
+        tier_provider = {"lead": "anthropic", "workhorse": "openai", "bulk": "nous"}
+        tier_label = {"lead": "Claude", "workhorse": "GPT", "bulk": "Hermes"}
+        options = []
+        for tier_key, cfg in TIERS.items():
+            if tier_key == "workhorse":
+                # Show what a workhorse would actually run (mesh inherits the
+                # default home's model when it can).
+                cfg = inherited_model() or cfg
+            options.append(
+                {
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                    "label": tier_label[tier_key],
+                    "tier": tier_key,
+                    "source": "tier",
+                    "available": state.get(tier_provider[tier_key]) == "configured",
+                }
+            )
+        for cm in custom_models.load(settings):
+            options.append(
+                {
+                    "provider": cm.id,
+                    "model": cm.model,
+                    "label": cm.label,
+                    "tier": None,
+                    "source": "custom",
+                    "available": secrets.is_set(cm.key_env),
+                }
+            )
+        return {"options": options}
+
+    @app.post("/api/models/custom", status_code=201)
+    def add_custom_model(
+        body: CustomModelInput,
+        settings: Settings = Depends(get_settings),
+        secrets: SecretsStore = Depends(get_secrets),
+    ) -> dict:
+        """Register an OpenAI-compatible provider + key so its model becomes
+        selectable in the Customize tab."""
+        try:
+            entry = custom_models.add(
+                settings, label=body.label, base_url=body.base_url, model=body.model
+            )
+        except custom_models.CustomModelError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            secrets.set_many({entry.key_env: body.api_key.strip()})
+        except SecretsError as exc:
+            # Don't leave a keyless orphan entry behind.
+            custom_models.remove(settings, entry.id)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"model": entry.to_json()}
+
+    @app.delete("/api/models/custom/{provider_id}")
+    def delete_custom_model(
+        provider_id: str,
+        prov: Provisioner = Depends(get_provisioner),
+        settings: Settings = Depends(get_settings),
+        secrets: SecretsStore = Depends(get_secrets),
+    ) -> dict:
+        in_use = sorted(
+            r.name for r in prov.list_agents() if r.model_provider == provider_id
+        )
+        if in_use:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"'{provider_id}' is still used by: {', '.join(in_use)} — "
+                    "switch their model first"
+                ),
+            )
+        try:
+            entry = custom_models.remove(settings, provider_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="no such custom model") from exc
+        try:
+            secrets.unset(entry.key_env)
+        except SecretsError:  # pragma: no cover - key_env is always writable
+            pass
+        return {"removed": entry.id}
 
     # --- the dashboard itself -------------------------------------------------
     # Registered last so every /api route above wins the match. This serves the

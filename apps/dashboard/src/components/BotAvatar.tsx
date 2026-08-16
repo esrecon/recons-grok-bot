@@ -1,18 +1,40 @@
+import { useState } from "react";
+import { api } from "../api";
 import { shapeForId } from "../theme";
 
 // Grok Bot's signature: a saturated organic blob with two white "eyes". Shape is
-// stable per agent id; colour comes from the agent's avatar_color.
+// stable per agent id; colour comes from the agent's avatar_color. When the
+// agent has a generated headshot (avatar_version set), that image renders
+// instead — broken/deleted files fall back to the blob. Both modes carry the
+// avatar-hover class, so every avatar in the app animates on mouseover.
 export function BotAvatar({
   id,
   color,
   size = 36,
   title,
+  imageVersion,
 }: {
   id: string;
   color: string;
   size?: number;
   title?: string;
+  imageVersion?: number | null;
 }) {
+  const [broken, setBroken] = useState(false);
+  const label = title ? `${title} avatar` : "agent avatar";
+  if (imageVersion != null && !broken) {
+    return (
+      <img
+        src={api.avatarUrl(id, imageVersion)}
+        width={size}
+        height={size}
+        alt={label}
+        onError={() => setBroken(true)}
+        className="avatar-hover shrink-0 rounded-full object-cover"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
   const path = shapeForId(id);
   // Eyes: two rounded oblongs, angled slightly inward for the "shy" look.
   return (
@@ -21,8 +43,8 @@ export function BotAvatar({
       height={size}
       viewBox="0 0 100 100"
       role="img"
-      aria-label={title ? `${title} avatar` : "agent avatar"}
-      className="shrink-0"
+      aria-label={label}
+      className="avatar-hover shrink-0"
     >
       <path d={path} fill={color} />
       <g fill="#ffffff">
@@ -41,6 +63,7 @@ export function BotAvatarWithStatus(props: {
   size?: number;
   status?: "running" | "paused" | "error";
   title?: string;
+  imageVersion?: number | null;
 }) {
   const { status = "running", size = 36 } = props;
   const dot =

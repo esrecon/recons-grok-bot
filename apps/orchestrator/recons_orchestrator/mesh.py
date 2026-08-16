@@ -22,6 +22,7 @@ from typing import Callable
 import yaml
 from jinja2 import Environment, PackageLoader, select_autoescape
 
+from . import custom_models
 from .config import Settings, TierConfig, TIERS, inherited_model
 from .models import AgentRecord, ModelTier
 from .telegram import load_tokens as load_telegram_tokens
@@ -152,6 +153,9 @@ class Mesh:
         rendered = self._jinja.get_template("config.yaml.j2").render(
             record=record,
             tier=tier,
+            # Operator-registered providers (Customize tab) are not part of the
+            # shared Hermes config, so the agent's own config must define them.
+            custom_provider=custom_models.get(self._s, tier.provider),
             peers=peers,
             shared_skills_dir=str(self._s.shared_skills_dir),
             webhook_receiver_url=self._s.webhook_receiver_url,
