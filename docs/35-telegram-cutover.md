@@ -85,6 +85,31 @@ gateway. Messages handled here during the failed window exist only in this
 copy's `state.db` and are overwritten by the next sync — accepted losses of a
 failed window.
 
+## Custom config, and data that lives outside the home
+
+Promotion regenerates the agent's `config.yaml` from the platform template —
+but custom top-level blocks (MCP servers, extra peers, tool config) are
+**captured, not dropped**: they land in `agents/<id>/config-extras.yaml`,
+which the platform re-appends to the generated config on every regeneration.
+From then on that file is yours — edit it to change the custom blocks; the
+promote output lists exactly what was captured.
+
+Data folders those blocks point at often live *outside* `~/.hermes` (an
+Obsidian memory vault, say). Bring them across with the migration's `--also`
+flag — once is enough; the stamp remembers it for every later sync, the
+final one included:
+
+```bash
+./scripts/migrate-hermes.sh sync --also /root/obsidian-memory-vault
+```
+
+The folder lands in `/opt/recons/agents/<id>/data/<name>` — inside the
+gateway's writable sandbox and the backup scope — and promotion rewrites the
+old path to the new one inside the captured config, so e.g. an MCP
+filesystem server points at the local copy. VERIFY after cutover that the
+tool actually starts: the sandbox allows the path, but the MCP command
+(often `npx`) must exist on this machine too.
+
 ## Worth knowing
 
 - **Pairing**: your DM pairing state lives inside the copied home and should

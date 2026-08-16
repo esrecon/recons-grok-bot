@@ -157,6 +157,27 @@ class Mesh:
             webhook_receiver_url=self._s.webhook_receiver_url,
             webhook_secret_env=self._s.webhook_secret_env,
         )
+        # Operator extras: user-owned YAML appended verbatim on every render,
+        # so custom blocks (MCP servers, extra peers) survive regeneration.
+        # Duplicate top-level keys resolve last-wins, giving extras override
+        # power — deliberate, it is the operator's escape hatch.
+        extras_file = self._s.config_extras(record.id)
+        if extras_file.is_file():
+            extras = extras_file.read_text("utf-8").strip()
+            if extras:
+                try:
+                    yaml.safe_load(extras)
+                except yaml.YAMLError as exc:
+                    # A broken extras file must fail loud, never be skipped —
+                    # silently dropping it would disconnect the very tools it
+                    # exists to preserve.
+                    raise MeshError(f"{record.id}: {extras_file} is not valid YAML: {exc}") from exc
+                rendered += (
+                    "\n# --- Operator extras (config-extras.yaml — user-owned, appended\n"
+                    "# verbatim on every regeneration; edit that file, not this one) ---\n"
+                    + extras
+                    + "\n"
+                )
         # Fail loudly if the template ever emits invalid YAML.
         yaml.safe_load(rendered)
         (home / "config.yaml").write_text(rendered, "utf-8")

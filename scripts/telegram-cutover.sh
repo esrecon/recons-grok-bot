@@ -208,7 +208,9 @@ if [ -n "$OLD_UNIT" ]; then
     warn "systemctl could not disable $OLD_UNIT — trying pkill"
   fi
 fi
-ssh_old "pkill -f 'hermes gateway'" 2>/dev/null || true
+# Both spellings of the gateway process: the wrapper form (`hermes gateway`)
+# and the direct module form (`python -m hermes_cli.main gateway run`).
+ssh_old "pkill -f 'hermes gateway|hermes_cli\.main gateway'" 2>/dev/null || true
 sleep 2
 if ssh_old "pgrep -af hermes 2>/dev/null" 2>/dev/null | grep -qi gateway; then
   die "a hermes gateway is STILL running on $OLD_HOST — stop it manually (which supervisor keeps restarting it?), then re-run"
@@ -242,10 +244,10 @@ PY
 )"
 REPORT="$(api_call POST "/api/agents/$AGENT_ID/promote" "$PROMOTE_BODY")"
 note "token source: $(json_get "$REPORT" telegram_token_source || echo '?')"
-DROPPED="$(json_get "$REPORT" dropped_config_keys || echo '[]')"
-if [ "$DROPPED" != "[]" ] && [ -n "$DROPPED" ]; then
-  warn "old config keys not carried into the managed template: $DROPPED"
-  warn "(archived at $(json_get "$REPORT" backup_path || echo 'config.yaml.pre-promote.bak'))"
+CAPTURED="$(json_get "$REPORT" captured_config_keys || echo '[]')"
+if [ "$CAPTURED" != "[]" ] && [ -n "$CAPTURED" ]; then
+  note "custom config captured: $CAPTURED"
+  note "→ preserved in $(json_get "$REPORT" extras_path || echo 'config-extras.yaml') and re-applied on every regeneration"
 fi
 note "promoted: managed, in the A2A mesh$([ "$MAKE_LEAD" = 1 ] && printf ', head of staff')"
 

@@ -55,6 +55,10 @@ Options
                              shared: symlink this machine's default auth store
                              copy:   bring the remote auth.json (token-rotation risk)
                              none:   leave the copy unauthenticated
+  --also <remote-path>     Extra folder OUTSIDE the Hermes home to copy too
+                           (e.g. an Obsidian vault an MCP server reads).
+                           Lands in agents/<id>/data/<name>; remembered in the
+                           stamp, so later syncs repeat it. Repeatable.
   --final                  Cutover-grade sync: requires the old gateway stopped;
                            also brings the remote auth.json across
   --assume-old-stopped     Skip the interactive stopped-gateway confirmation
@@ -100,6 +104,8 @@ PRUNE=0
 YES=0
 DRY=0
 EXTRA_EXCLUDES=()
+ALSO_PATHS=()
+ALSO_JSON="[]"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -109,6 +115,7 @@ while [ $# -gt 0 ]; do
     --agent-id)        AGENT_ID="${2:?--agent-id needs a value}"; shift 2 ;;
     --role)            ROLE="${2:?--role needs a value}"; shift 2 ;;
     --auth)            AUTH_MODE="${2:?--auth needs shared|copy|none}"; AUTH_SET=1; shift 2 ;;
+    --also)            ALSO_PATHS+=("${2:?--also needs a remote path}"); shift 2 ;;
     --final)           FINAL=1; shift ;;
     --assume-old-stopped) ASSUME_STOPPED=1; shift ;;
     --prune)           PRUNE=1; shift ;;
@@ -208,11 +215,32 @@ except Exception:
 PY
 }
 
+stamp_also_remotes() {  # one recorded --also remote path per line
+  python3 - "$STAMP_FILE" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        for entry in json.load(f).get("also_paths") or []:
+            if isinstance(entry, dict) and entry.get("remote"):
+                print(entry["remote"])
+except Exception:
+    pass
+PY
+}
+
+REMOTE_HOME_DIR=""
+remote_home() {
+  if [ -z "$REMOTE_HOME_DIR" ]; then
+    REMOTE_HOME_DIR="$(ssh_run printenv HOME)"
+  fi
+  printf '%s' "$REMOTE_HOME_DIR"
+}
+
 write_stamp() {  # $1 = kind (pull|sync|final), $2 = sqlite method
   MH_FILE="$STAMP_FILE" MH_SOURCE_HOST="$SRC_HOST" MH_SOURCE_HOME="$SRC_HOME_ABS" \
   MH_AGENT_ID="$AGENT_ID" MH_NAME="$NAME" MH_KIND="$1" MH_METHOD="$2" \
   MH_REMOTE_VER="${REMOTE_VERSION:-unknown}" MH_LOCAL_VER="${LOCAL_VERSION:-unknown}" \
-  MH_DEST="$DEST_HOME" \
+  MH_DEST="$DEST_HOME" MH_ALSO="${ALSO_JSON:-[]}" \
   python3 - <<'PY'
 import hashlib, json, os, time
 from pathlib import Path
@@ -237,6 +265,7 @@ stamp = {
     "config_sha": sha("config.yaml"),
     "remote_hermes_version": os.environ["MH_REMOTE_VER"],
     "local_hermes_version": os.environ["MH_LOCAL_VER"],
+    "also_paths": json.loads(os.environ.get("MH_ALSO") or "[]"),
 }
 p = Path(os.environ["MH_FILE"])
 p.write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
@@ -424,6 +453,68 @@ transfer() {  # $1 = "pull" | "sync"
   fi
 }
 
+# Extra data folders OUTSIDE the Hermes home (e.g. an Obsidian vault an MCP
+# server reads). Copied into $AGENT_DIR/data/<name> — inside the systemd
+# unit's ReadWritePaths and the backup scope — and recorded in the stamp so
+# later syncs repeat them without re-typing --also. Promotion uses the same
+# stamp records to rewrite paths inside captured config blocks.
+sync_also_paths() {  # $1 = "pull" | "sync"
+  local mode="$1"
+  local remotes=() r flag seen
+  if [ -f "$STAMP_FILE" ]; then
+    while IFS= read -r r; do
+      if [ -n "$r" ]; then remotes+=("$r"); fi
+    done < <(stamp_also_remotes)
+  fi
+  for flag in "${ALSO_PATHS[@]}"; do
+    seen=0
+    for r in "${remotes[@]}"; do
+      if [ "$r" = "$flag" ]; then seen=1; break; fi
+    done
+    if [ "$seen" = 0 ]; then remotes+=("$flag"); fi
+  done
+  ALSO_JSON="[]"
+  if [ ${#remotes[@]} -eq 0 ]; then
+    return 0
+  fi
+
+  local flat=() dests=() remote abs base dest d backup_args
+  for remote in "${remotes[@]}"; do
+    abs="$remote"
+    # A leading tilde is a path on the REMOTE machine — expand it against the
+    # remote $HOME, not the local one.
+    # shellcheck disable=SC2088
+    case "$abs" in
+      "~") abs="$(remote_home)" ;;
+      "~/"*) abs="$(remote_home)/${abs#\~/}" ;;
+    esac
+    base="$(basename "$abs")"
+    dest="$AGENT_DIR/data/$base"
+    for d in "${dests[@]}"; do
+      if [ "$d" = "$dest" ]; then
+        die "two --also paths share the folder name '$base' — rename one"
+      fi
+    done
+    dests+=("$dest")
+    mkdir -p "$dest"
+    note "copying extra folder $abs → $dest"
+    backup_args=()
+    if [ "$mode" = "sync" ]; then
+      backup_args=(--backup --backup-dir="$AGENT_DIR/sync-backups/$(date -u +%Y%m%dT%H%M%SZ)-$base")
+    fi
+    rsync -a -s --partial "${RSYNC_SSH[@]}" "${backup_args[@]}" \
+      "$SRC_HOST:$abs/" "$dest/"
+    flat+=("$abs" "$dest")
+  done
+
+  ALSO_JSON="$(python3 - "${flat[@]}" <<'PY'
+import json, sys
+a = sys.argv[1:]
+print(json.dumps([{"remote": r, "local": l} for r, l in zip(a[::2], a[1::2])]))
+PY
+)"
+}
+
 fetch_remote_auth() {
   rm -f "$DEST_HOME/auth.json"
   if rsync -a -s "${RSYNC_SSH[@]}" "$SRC_HOST:$SRC_HOME_ABS/auth.json" "$DEST_HOME/auth.json" 2>/dev/null; then
@@ -574,6 +665,7 @@ cmd_pull() {
   fi
   stage_remote_dbs
   transfer pull
+  sync_also_paths pull
   place_auth
   fix_perms
   register
@@ -632,6 +724,7 @@ cmd_sync() {
   divergence_guard
   stage_remote_dbs
   transfer sync
+  sync_also_paths sync
 
   if [ "$FINAL" = 1 ]; then
     # The old machine is quiescent and about to retire: the promoted agent
@@ -703,6 +796,9 @@ cmd_status() {
   fi
 
   note "sizes: local $(du -sh "$DEST_HOME" 2>/dev/null | cut -f1 || echo '?')"
+  if [ -d "$AGENT_DIR/data" ]; then
+    note "extra data folders (--also): $(find "$AGENT_DIR/data" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l) under $AGENT_DIR/data/"
+  fi
   if [ -d "$AGENT_DIR/sync-backups" ]; then
     note "sync backups: $(find "$AGENT_DIR/sync-backups" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l) (under $AGENT_DIR/sync-backups/)"
   fi

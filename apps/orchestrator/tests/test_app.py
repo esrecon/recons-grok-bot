@@ -149,6 +149,8 @@ def test_promote_demote_and_telegram_endpoints(client, tmp_path):
     assert body["record"]["is_lead"] is True
     assert body["record"]["status"] == "paused"  # nothing started by promote
     assert body["telegram_token_source"] == "provided"
+    assert body["captured_config_keys"] == []  # this home had only model:
+    assert body["extras_path"].endswith("config-extras.yaml")
 
     # Write-only contract: presence is reported, the token never is.
     tg = client.get("/api/agents/hermes/telegram")

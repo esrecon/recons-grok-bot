@@ -97,6 +97,47 @@ def test_removed_agent_tokens_pruned(provisioner, settings):
     assert all("scout" not in edge for edge in tokens)
 
 
+# --- operator config extras ---------------------------------------------------
+def test_config_extras_are_appended_and_survive_rewire(provisioner, settings):
+    _make(provisioner, "Recon")
+    settings.config_extras("recon").write_text(
+        "mcp:\n  servers:\n    obsidian:\n      command: npx\n"
+    )
+
+    _make(provisioner, "Scout")  # roster change → full rewire
+
+    cfg = yaml.safe_load((settings.home_dir("recon") / "config.yaml").read_text())
+    assert cfg["mcp"]["servers"]["obsidian"]["command"] == "npx"
+
+    _make(provisioner, "Clerk")  # and again — regeneration keeps them
+    cfg = yaml.safe_load((settings.home_dir("recon") / "config.yaml").read_text())
+    assert "mcp" in cfg
+
+
+def test_absent_or_empty_extras_change_nothing(provisioner, settings):
+    from recons_orchestrator.mesh import Mesh
+
+    _make(provisioner, "Recon")
+    before = (settings.home_dir("recon") / "config.yaml").read_bytes()
+
+    settings.config_extras("recon").write_text("\n\n")
+    Mesh(settings, token_factory=lambda: "T").rewire(provisioner.list_agents())
+
+    assert (settings.home_dir("recon") / "config.yaml").read_bytes() == before
+
+
+def test_invalid_extras_yaml_fails_loud(provisioner, settings):
+    import pytest
+
+    from recons_orchestrator.mesh import Mesh, MeshError
+
+    _make(provisioner, "Recon")
+    settings.config_extras("recon").write_text(": not yaml [")
+
+    with pytest.raises(MeshError, match="config-extras"):
+        Mesh(settings, token_factory=lambda: "T").rewire(provisioner.list_agents())
+
+
 # --- telegram rendering -------------------------------------------------------
 def test_telegram_disabled_renders_no_block(provisioner, settings):
     _make(provisioner, "Recon")

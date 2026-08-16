@@ -117,11 +117,15 @@ class AgentRecord(BaseModel):
 
 
 class PromoteReport(BaseModel):
-    """What promote_agent actually did — honest accounting for the operator,
-    including the top-level config keys the template does not carry over."""
+    """What promote_agent actually did — honest accounting for the operator.
+
+    captured_config_keys are the old config's top-level blocks the template
+    does not model; they are preserved in config-extras.yaml (extras_path)
+    and re-appended to the generated config on every regeneration."""
 
     record: AgentRecord
     model_captured: bool
     telegram_token_source: str  # "provided" | "extracted" | "none"
-    dropped_config_keys: list[str]
+    captured_config_keys: list[str]
+    extras_path: str
     backup_path: str
