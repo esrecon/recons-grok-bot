@@ -277,8 +277,47 @@ def test_improve_clamps_to_field_limits(two_agents, monkeypatch):
     assert not out.endswith(" ")
 
 
+def test_improve_uses_hermes_cli_when_no_key_is_stored(two_agents, monkeypatch):
+    env = two_agents  # no NOUS key: the normal setup signs in through Hermes
+    seen = {}
+
+    def fake_run(argv, stdin=None, capture_output=None, text=None, timeout=None, env=None):
+        seen.update(argv=argv, env=env)
+        return SimpleNamespace(returncode=0, stdout="  Polished by Hermes.  \n", stderr="")
+
+    monkeypatch.setattr(assist.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(assist.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        assist.httpx, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("HTTP used"))
+    )
+
+    resp = env.client.post(
+        "/api/assist/improve",
+        json={"field": "personality", "text": "be nice", "agent_context": {"name": "Recon", "role": "Fix consoles"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "Polished by Hermes."}
+    # One argv element carries the whole composed prompt (chat_command shape).
+    prompt = seen["argv"][-1]
+    assert "Recon" in prompt and "be nice" in prompt
+    assert seen["env"]["HERMES_HOME"]  # runs against the default home
+
+
+def test_improve_cli_failure_is_502(two_agents, monkeypatch):
+    env = two_agents
+    monkeypatch.setattr(assist.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+    monkeypatch.setattr(
+        assist.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+    )
+    resp = env.client.post("/api/assist/improve", json={"field": "name", "text": "x"})
+    assert resp.status_code == 502
+
+
 def test_improve_falls_back_to_wrapper_then_503(two_agents, monkeypatch):
     env = two_agents  # no NOUS key stored
+    monkeypatch.setattr(assist, "hermes_cli_available", lambda: False)
 
     monkeypatch.setattr(assist, "wrapper_alive", lambda secrets: True)
     seen = {}
@@ -295,7 +334,7 @@ def test_improve_falls_back_to_wrapper_then_503(two_agents, monkeypatch):
     monkeypatch.setattr(assist, "wrapper_alive", lambda secrets: False)
     resp = env.client.post("/api/assist/improve", json={"field": "name", "text": "bob"})
     assert resp.status_code == 503
-    assert "Nous" in resp.json()["detail"]
+    assert "Hermes CLI" in resp.json()["detail"]
 
 
 def test_improve_upstream_error_is_502(two_agents, monkeypatch):
