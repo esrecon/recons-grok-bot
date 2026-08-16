@@ -29,27 +29,50 @@ class TierConfig:
 
 TIERS: dict[str, TierConfig] = {
     # Claude via claude-code-openai-wrapper (custom OpenAI-compatible provider
-    # "claude_wrapper"). Reserved for the lead agent. Falls back to the GPT
-    # subscription if the wrapper is down. VERIFY model id against the wrapper.
+    # "claude_wrapper"). Reserved for the lead agent. VERIFY both ids.
     "lead": TierConfig(
         provider="claude_wrapper",
         model="claude-sonnet-4-6",  # VERIFY
-        fallbacks=("openai/gpt-5.6-sol",),  # VERIFY
     ),
-    # ChatGPT/Codex subscription — the everyday workhorse (officially blessed
-    # for third-party agents, see docs/40). Falls back to cheap Nous.
+    # ChatGPT/Codex subscription — the everyday workhorse. Both values verified
+    # verbatim from a live v0.20.1 Codex sign-in, which prints
+    # "Config updated: ... (model.provider=openai-codex)" and
+    # "Default model set to: gpt-5.6-terra". Used only when the default home's
+    # own config can't be inherited (see inherited_model()).
     "workhorse": TierConfig(
-        provider="openai",
-        model="gpt-5.6-sol",  # VERIFY
-        fallbacks=("nous/hermes-4-70b",),  # VERIFY
+        provider="openai-codex",
+        model="gpt-5.6-terra",
     ),
-    # Nous Portal — cheap bulk. Falls back to the GPT subscription.
+    # Nous Portal — cheap bulk. VERIFY both ids ('hermes model' lists them).
     "bulk": TierConfig(
         provider="nous",
         model="hermes-4-70b",  # VERIFY
-        fallbacks=("openai/gpt-5.6-sol",),  # VERIFY
     ),
 }
+
+
+def inherited_model() -> TierConfig | None:
+    """The provider/model the default HERMES_HOME is actually configured with.
+
+    Hermes's own sign-in flows write working values into the default home's
+    config.yaml (e.g. model.provider=openai-codex). Inheriting those beats any
+    constant in this file: a hardcoded guess of "openai" once made every
+    workhorse agent fail with "Unknown provider", while the correct id had been
+    sitting in that config all along.
+    """
+    import yaml
+
+    default_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    try:
+        data = yaml.safe_load((default_home / "config.yaml").read_text("utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    model = (data or {}).get("model") or {}
+    provider = model.get("provider")
+    default = model.get("default") or model.get("model")
+    if provider and default:
+        return TierConfig(provider=str(provider), model=str(default))
+    return None
 
 
 @dataclass

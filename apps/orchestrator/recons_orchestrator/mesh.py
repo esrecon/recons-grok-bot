@@ -22,8 +22,8 @@ from typing import Callable
 import yaml
 from jinja2 import Environment, PackageLoader, select_autoescape
 
-from .config import Settings, TIERS
-from .models import AgentRecord
+from .config import Settings, TIERS, inherited_model
+from .models import AgentRecord, ModelTier
 
 TokenFactory = Callable[[], str]
 
@@ -128,9 +128,15 @@ class Mesh:
     def _write_config(self, record: AgentRecord, peers: list[AgentRecord]) -> None:
         home = self._s.home_dir(record.id)
         home.mkdir(parents=True, exist_ok=True)
+        tier = TIERS[record.tier.value]
+        if record.tier is ModelTier.WORKHORSE:
+            # Workhorse means "the subscription this machine is signed into" —
+            # inherit the provider/model Hermes itself wrote to the default
+            # home's config, falling back to the constants only without one.
+            tier = inherited_model() or tier
         rendered = self._jinja.get_template("config.yaml.j2").render(
             record=record,
-            tier=TIERS[record.tier.value],
+            tier=tier,
             peers=peers,
             shared_skills_dir=str(self._s.shared_skills_dir),
             webhook_receiver_url=self._s.webhook_receiver_url,

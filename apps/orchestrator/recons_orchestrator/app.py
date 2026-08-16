@@ -8,6 +8,7 @@ an operator login sits in front (Phase 4).
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -103,6 +104,22 @@ async def _lifespan(app: FastAPI):
         # A missing or read-only root is surfaced by /api/setup rather than
         # crashing the service on boot.
         pass
+
+    # Regenerate every managed agent config on boot. Config templates evolve
+    # (a provider-id fix, say) but rewiring only ran on roster changes, so
+    # existing agents kept stale configs until something unrelated touched the
+    # roster. Restarting the orchestrator now deploys template fixes. Imported
+    # agents are skipped by rewire() as always; edge tokens are stable, so this
+    # is idempotent.
+    try:
+        from .mesh import Mesh
+        from .roster import Roster
+
+        records = Roster(settings.roster_path).load()
+        if records:
+            Mesh(settings).rewire(records)
+    except Exception:  # noqa: BLE001 - boot must not die on a bad roster file
+        logging.getLogger("recons.app").exception("startup rewire failed")
     yield
 
 
