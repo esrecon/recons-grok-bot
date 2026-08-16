@@ -67,6 +67,14 @@ export function ChatView({ agent }: { agent: Agent }) {
                     kind: ev.kind,
                   },
                 };
+              case "error":
+                // Server-side detail beats a generic failure line: it names
+                // the command that failed and how to fix it.
+                return {
+                  ...msg,
+                  text: (msg.text ? msg.text + "\n" : "") + `⚠ ${ev.message}`,
+                  pending: false,
+                };
               default:
                 return msg;
             }
