@@ -46,9 +46,14 @@ provable — if a box won't tick, the runbook section is named beside it.
 ## E. Agents talk, and you can see it
 
 - [ ] Ask the lead to delegate to another agent; you get an answer back *(50-agents-a2a)*
+- [ ] `hermes chat --list-tools` with an agent's `HERMES_HOME` lists the five
+      `a2a_*` tools *(50-agents-a2a)*
 - [ ] The Audit log shows both halves as `A → B` and `B → A` *(Audit tab)*
 - [ ] The **Agent-to-agent only** filter shows exactly those exchanges *(Audit tab)*
 - [ ] An A2A call with a wrong bearer token is rejected *(50-agents-a2a)*
+- [ ] A tokenless `POST` to an agent's A2A port returns `401` *(50-agents-a2a)*
+- [ ] The lead's **mailbox health check** on the email agent returns the JSON
+      contract, secret-free — or an honest `not_configured` *(50-agents-a2a)*
 - [ ] Export downloads the full JSONL transcript *(Audit tab)*
 
 ## F. The real PC

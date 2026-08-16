@@ -97,6 +97,39 @@ def test_removed_agent_tokens_pruned(provisioner, settings):
     assert all("scout" not in edge for edge in tokens)
 
 
+# --- outbound A2A toolset rendering --------------------------------------------
+# Hermes ships the "a2a" toolset default-off; the gateway.platforms.a2a block
+# alone only serves inbound. platform_toolsets must therefore restate each
+# conversational platform's composite plus "a2a" — and must NOT configure the
+# "a2a" platform itself (its auto composite is registry-generated; an explicit
+# list there would silently drop the core tools).
+def test_outbound_a2a_toolset_enabled_for_cli_platform(provisioner, settings):
+    _make(provisioner, "Recon")
+    _make(provisioner, "Scout")
+    for aid in ("recon", "scout"):
+        cfg = yaml.safe_load((settings.home_dir(aid) / "config.yaml").read_text())
+        pts = cfg["platform_toolsets"]
+        assert pts["cli"] == ["hermes-cli", "a2a"]
+        assert "a2a" not in pts  # never an explicit a2a-platform entry
+        assert "telegram" not in pts  # only rendered for telegram agents
+
+
+def test_outbound_a2a_toolset_follows_telegram_enablement(provisioner, settings):
+    from recons_orchestrator import telegram as tg
+
+    _make(provisioner, "Recon")
+    _make(provisioner, "Comms")
+    tg.store_token(settings, "comms", "12345678:tg-secret-value")
+    provisioner.set_telegram("comms", enabled=True, allowed_users="42")
+
+    cfg = yaml.safe_load((settings.home_dir("comms") / "config.yaml").read_text())
+    assert cfg["platform_toolsets"]["telegram"] == ["hermes-telegram", "a2a"]
+
+    provisioner.set_telegram("comms", enabled=False, allowed_users="")
+    cfg = yaml.safe_load((settings.home_dir("comms") / "config.yaml").read_text())
+    assert "telegram" not in cfg["platform_toolsets"]
+
+
 # --- operator config extras ---------------------------------------------------
 def test_config_extras_are_appended_and_survive_rewire(provisioner, settings):
     _make(provisioner, "Recon")

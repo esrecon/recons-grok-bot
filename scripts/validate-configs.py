@@ -95,6 +95,33 @@ def check_yaml_doc(label: str, doc: object, raw: str) -> None:
                 if not token:
                     fail(f"{label}: a2a peer '{peer}' has no auth token")
 
+    # Outbound A2A tools: Hermes ships the "a2a" toolset default-off, so any
+    # config that serves inbound A2A must also enable it per conversational
+    # platform — restating the platform composite, because an explicit list
+    # replaces the default. The "a2a" platform itself must never get an
+    # explicit entry (its composite is registry-generated; an explicit list
+    # would silently drop the core tools).
+    if isinstance(doc, dict) and isinstance(doc.get("gateway"), dict):
+        platforms = doc["gateway"].get("platforms")
+        a2a_plat = platforms.get("a2a") if isinstance(platforms, dict) else None
+        if isinstance(a2a_plat, dict) and a2a_plat.get("enabled"):
+            pts = doc.get("platform_toolsets")
+            if not isinstance(pts, dict):
+                fail(f"{label}: inbound A2A enabled but no platform_toolsets — outbound a2a_* tools stay off")
+            else:
+                cli = pts.get("cli") if isinstance(pts.get("cli"), list) else []
+                if "a2a" not in cli:
+                    fail(f"{label}: platform_toolsets.cli must include 'a2a' (outbound A2A tools)")
+                if not any(str(t).startswith("hermes-") for t in cli):
+                    fail(f"{label}: platform_toolsets.cli must restate the platform composite (hermes-cli)")
+                if "a2a" in pts:
+                    fail(f"{label}: platform_toolsets must not configure the 'a2a' platform explicitly")
+                tg_plat = platforms.get("telegram") if isinstance(platforms, dict) else None
+                if isinstance(tg_plat, dict) and tg_plat.get("enabled"):
+                    tg_list = pts.get("telegram") if isinstance(pts.get("telegram"), list) else []
+                    if "a2a" not in tg_list:
+                        fail(f"{label}: telegram enabled but platform_toolsets.telegram lacks 'a2a'")
+
     # An enabled telegram platform must never carry a literal token — only the
     # ${TELEGRAM_BOT_TOKEN} placeholder the mesh resolves via service.env.
     if isinstance(doc, dict) and isinstance(doc.get("gateway"), dict):

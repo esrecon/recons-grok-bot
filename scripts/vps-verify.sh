@@ -171,6 +171,11 @@ for cfg in "$RECONS_ROOT"/agents/*/home/config.yaml; do
   check grep -qE 'host:[[:space:]]*127\.0\.0\.1' "$cfg" \
     -- "$NAME: A2A bound to loopback" \
     -- "$NAME: A2A host is not loopback"
+  # Outbound a2a_* tools are a default-off Hermes toolset; without this line
+  # the agent is "A2A connected" (inbound) but cannot call any peer.
+  check grep -q 'cli: \[hermes-cli, a2a\]' "$cfg" \
+    -- "$NAME: outbound A2A toolset enabled (cli)" \
+    -- "$NAME: platform_toolsets.cli lacks 'a2a' — no a2a_* tools in the manifest"
 done
 if [ "$FOUND" -eq 0 ]; then
   info "no agents provisioned yet"

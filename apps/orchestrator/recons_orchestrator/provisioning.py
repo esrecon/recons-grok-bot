@@ -48,6 +48,7 @@ TEMPLATE_TOP_LEVEL_KEYS = frozenset(
         "skills",
         "approvals",
         "terminal",
+        "platform_toolsets",
         "gateway",
         "a2a_agents",
         "webhooks",

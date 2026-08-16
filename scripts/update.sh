@@ -100,6 +100,22 @@ if command -v uv >/dev/null && [ -f "$APP_DIR/apps/orchestrator/pyproject.toml" 
   as_owner "cd '$APP_DIR/apps/orchestrator' && uv sync --frozen"
 fi
 
+# Vendored skills ship in the repo, but agents only read the shared library
+# (skills.external_dirs). Install/refresh each repo-owned skill there.
+# Operator-taught skills live under their own slugs and are never touched.
+if [ -d "$REPO_DIR/skills" ]; then
+  echo "   installing vendored skills into $RECONS_ROOT/shared/skills"
+  for skill_dir in "$REPO_DIR"/skills/*/; do
+    [ -f "${skill_dir}SKILL.md" ] || continue
+    slug="$(basename "$skill_dir")"
+    install -d -m 700 "$RECONS_ROOT/shared/skills/$slug"
+    cp -a "${skill_dir}." "$RECONS_ROOT/shared/skills/$slug/"
+    if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
+      chown -R "$TARGET_USER:$TARGET_USER" "$RECONS_ROOT/shared/skills/$slug"
+    fi
+  done
+fi
+
 echo "== 4/6 Rebuild dashboard =="
 if [ -f "$REPO_DIR/apps/dashboard/package.json" ]; then
   as_owner "cd '$REPO_DIR/apps/dashboard' && npm ci --no-audit --no-fund && npm run build"
