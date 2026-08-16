@@ -36,14 +36,14 @@ def settings(tmp_path) -> Settings:
 # --- command template ---------------------------------------------------------
 def test_default_command_appends_text_via_placeholder(monkeypatch):
     monkeypatch.delenv("RECONS_CHAT_CMD", raising=False)
-    assert chat_command("hello world") == ["hermes", "-p", "hello world"]
+    assert chat_command("hello world") == ["hermes", "-z", "hello world"]
 
 
 def test_text_is_one_argv_element_never_shell(monkeypatch):
     monkeypatch.delenv("RECONS_CHAT_CMD", raising=False)
     hostile = "hello; rm -rf / && echo $(whoami) | tee x"
     argv = chat_command(hostile)
-    assert argv == ["hermes", "-p", hostile]  # intact, unsplit, uninterpreted
+    assert argv == ["hermes", "-z", hostile]  # intact, unsplit, uninterpreted
 
 
 def test_custom_template_honoured(monkeypatch):
