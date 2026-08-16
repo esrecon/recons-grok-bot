@@ -226,12 +226,20 @@ if command -v systemctl >/dev/null; then
   esac
 
   # Is the port owned by the service, or by something systemd doesn't manage?
+  # Not by pid equality: the unit's ExecStart launcher (`uv run`) may start
+  # uvicorn as a CHILD of MainPID, which is still the service. Same *cgroup*
+  # is the real test — an actual orphan (started by hand, or surviving a
+  # botched restart) lives outside the unit's cgroup.
   MAINPID="$("${SYSTEMCTL[@]}" show -p MainPID --value recons-orchestrator 2>/dev/null || echo 0)"
   PORTPID="$(ss -tlnpH 2>/dev/null | awk '/127\.0\.0\.1:8330/ {print $0}' \
              | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 || true)"
   if [ -n "$PORTPID" ] && [ "$MAINPID" != "0" ] && [ "$PORTPID" != "$MAINPID" ]; then
-    fail "port 8330 is held by pid $PORTPID, not the service (pid $MAINPID)"
-    printf '       %s\n' "That orphan runs without the unit's environment — kill it and restart."
+    if grep -q "recons-orchestrator.service" "/proc/$PORTPID/cgroup" 2>/dev/null; then
+      : # the unit's own child (uv run → uvicorn) — that IS the service
+    else
+      fail "port 8330 is held by pid $PORTPID, outside the service (main pid $MAINPID)"
+      printf '       %s\n' "That orphan runs without the unit's environment — kill it and restart."
+    fi
   fi
 fi
 
