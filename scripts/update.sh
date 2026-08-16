@@ -74,7 +74,18 @@ else
 fi
 
 echo "== 3/6 Update this repo =="
+SELF="$REPO_DIR/scripts/update.sh"
+SELF_BEFORE="$(sha256sum "$SELF" | cut -d' ' -f1)"
 as_owner "git -C '$REPO_DIR' pull --ff-only" || echo "   (skipped: not a fast-forward)"
+# A running script keeps executing the version it started with, so a fix to
+# update.sh would not apply to the very run that fetched it (observed: a
+# restart fix rode along in a pull but the old step 5 still ran). Re-exec the
+# new script once; the guard prevents loops.
+if [ "$(sha256sum "$SELF" | cut -d' ' -f1)" != "$SELF_BEFORE" ] \
+   && [ "${RECONS_UPDATE_REEXEC:-}" != "1" ]; then
+  echo "   update.sh itself changed in this pull — re-running the new version"
+  RECONS_UPDATE_REEXEC=1 exec bash "$SELF"
+fi
 
 # The orchestrator unit runs from $RECONS_ROOT/app (quickstart copies the repo
 # there when the checkout lives elsewhere). Keep that copy in step and refresh
