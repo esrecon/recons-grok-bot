@@ -75,6 +75,26 @@ const logins = new Map();
 // Per-agent Telegram bot tokens (write-only, like provider keys).
 const tgTokens = new Map();
 
+// Customize tab state: per-agent souls, custom model providers, image settings.
+const souls = new Map();
+function defaultSoul(agent) {
+  return (
+    `# ${agent.name}\n\nYou are **${agent.name}**, a permanent AI teammate at Essex Recons.\n\n` +
+    `## Your job\n\n${agent.role}\n\n` +
+    `<!-- recons:team:begin (managed by the orchestrator) -->\n## Your team (managed)\n- everyone\n<!-- recons:team:end -->\n`
+  );
+}
+let customModels = [];
+const IMAGE_DEFAULTS = { base_url: "https://api.x.ai/v1", model: "grok-2-image" };
+// Seeded with a key (like the providers) so headshot generation works in e2e.
+let imageState = { key: fresh ? null : "seeded", ...IMAGE_DEFAULTS };
+let avatarSeq = 100;
+// 1x1 transparent PNG served as every generated headshot.
+const PNG_1PX = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
 // Hermes agents "already on the machine", for the import flow.
 const discovered = [
   { id: "hermes", name: "Hermes", home: "/root/.hermes", role: "Existing default agent", model: "gpt-5.6-terra" },
@@ -193,6 +213,9 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/__reset" && req.method === "POST") {
       agents.clear();
       logins.clear();
+      souls.clear();
+      customModels = [];
+      imageState = { key: fresh ? null : "seeded", ...IMAGE_DEFAULTS };
       providerState.nous = fresh ? null : "seeded";
       providerState.openai = fresh ? null : "seeded";
       providerState.anthropic = null;
@@ -334,6 +357,72 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/hooks" && req.method === "POST") {
       return send(res, 200, { status: "accepted" });
+    }
+
+    // --- customize: improve, image settings, model catalogue ---
+    if (pathname === "/api/assist/improve" && req.method === "POST") {
+      const body = await readBody(req);
+      return send(res, 200, { text: `${String(body.text || "").trim()} (polished)` });
+    }
+
+    if (pathname === "/api/settings/image") {
+      if (req.method === "PUT") {
+        const body = await readBody(req);
+        if (body.key !== undefined) imageState.key = String(body.key).trim() || null;
+        if (body.base_url !== undefined) {
+          imageState.base_url =
+            String(body.base_url).trim().replace(/\/+$/, "") || IMAGE_DEFAULTS.base_url;
+        }
+        if (body.model !== undefined) {
+          imageState.model = String(body.model).trim() || IMAGE_DEFAULTS.model;
+        }
+      }
+      return send(res, 200, {
+        key_set: imageState.key != null,
+        base_url: imageState.base_url,
+        model: imageState.model,
+      });
+    }
+
+    if (pathname === "/api/models" && req.method === "GET") {
+      const tiers = [
+        { provider: "claude_wrapper", model: "claude-sonnet-4-6", label: "Claude", tier: "lead", source: "tier", available: providerState.anthropic != null },
+        { provider: "openai-codex", model: "gpt-5.6-terra", label: "GPT", tier: "workhorse", source: "tier", available: providerState.openai != null },
+        { provider: "nous", model: "hermes-4-70b", label: "Hermes", tier: "bulk", source: "tier", available: providerState.nous != null },
+      ];
+      const custom = customModels.map((c) => ({
+        provider: c.id, model: c.model, label: c.label, tier: null, source: "custom", available: true,
+      }));
+      return send(res, 200, { options: [...tiers, ...custom] });
+    }
+
+    if (pathname === "/api/models/custom" && req.method === "POST") {
+      const body = await readBody(req);
+      const id = String(body.label || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+      if (!id) return send(res, 400, { detail: "label must contain a letter or digit" });
+      if (!String(body.api_key || "").trim()) return send(res, 422, { detail: "api_key is required" });
+      if (customModels.some((c) => c.id === id) || ["nous", "openai-codex", "claude_wrapper"].includes(id)) {
+        return send(res, 400, { detail: `a model provider named '${body.label}' already exists` });
+      }
+      const entry = {
+        id, label: String(body.label), base_url: String(body.base_url || ""), model: String(body.model || ""),
+        key_env: `CUSTOM_${id.toUpperCase().replace(/-/g, "_")}_API_KEY`,
+      };
+      customModels.push(entry);
+      return send(res, 201, { model: entry });
+    }
+
+    const cm = pathname.match(/^\/api\/models\/custom\/([^/]+)$/);
+    if (cm && req.method === "DELETE") {
+      const id = cm[1];
+      const users = [...agents.values()].filter((a) => a.model_provider === id).map((a) => a.name);
+      if (users.length) {
+        return send(res, 409, { detail: `'${id}' is still used by: ${users.sort().join(", ")} — switch their model first` });
+      }
+      const before = customModels.length;
+      customModels = customModels.filter((c) => c.id !== id);
+      if (customModels.length === before) return send(res, 404, { detail: "no such custom model" });
+      return send(res, 200, { removed: id });
     }
 
     // --- skills ---
@@ -486,6 +575,57 @@ const server = http.createServer(async (req, res) => {
       }
       if (action === "pause") return (agent.status = "paused"), send(res, 200, agent);
       if (action === "resume") return (agent.status = "running"), send(res, 200, agent);
+      if (action === "soul" && req.method === "GET") {
+        return send(res, 200, { content: souls.get(id) ?? defaultSoul(agent), exists: true });
+      }
+      if (action === "soul" && req.method === "PUT") {
+        const body = await readBody(req);
+        let content = String(body.content ?? "");
+        // Fence repair, mirroring the orchestrator: managed souls always carry
+        // the team block.
+        if (!agent.imported && !content.includes("recons:team:begin")) {
+          content = content.replace(/\n*$/, "\n\n") +
+            "<!-- recons:team:begin (managed by the orchestrator) -->\n## Your team (managed)\n- everyone\n<!-- recons:team:end -->\n";
+        }
+        souls.set(id, content);
+        return send(res, 200, { content });
+      }
+      if (action === "avatar" && req.method === "POST") {
+        if (imageState.key == null) {
+          return send(res, 503, { detail: "Add an image API key in Settings → Avatars first (xAI or OpenAI)." });
+        }
+        agent.avatar_version = ++avatarSeq;
+        return send(res, 200, agent);
+      }
+      if (action === "avatar" && req.method === "GET") {
+        if (!agent.avatar_version) return send(res, 404, { detail: "no generated avatar" });
+        res.writeHead(200, {
+          "content-type": "image/png",
+          "cache-control": "public, max-age=31536000, immutable",
+        });
+        res.end(PNG_1PX);
+        return;
+      }
+      if (!action && req.method === "PATCH") {
+        const body = await readBody(req);
+        if (body.name !== undefined) agent.name = String(body.name).trim();
+        if (body.role !== undefined) agent.role = String(body.role).trim();
+        if (body.personality !== undefined) agent.personality = String(body.personality).trim();
+        if (body.avatar_color !== undefined) agent.avatar_color = body.avatar_color;
+        if (body.model_provider !== undefined || body.model_name !== undefined) {
+          if (agent.imported) {
+            return send(res, 409, { detail: `'${agent.name}' is imported — promote it first to manage its model here` });
+          }
+          const mp = String(body.model_provider || "").trim();
+          const mn = String(body.model_name || "").trim();
+          if (!!mp !== !!mn) {
+            return send(res, 400, { detail: "model_provider and model_name go together — set both, or both empty to reset to the tier default" });
+          }
+          agent.model_provider = mp || null;
+          agent.model_name = mn || null;
+        }
+        return send(res, 200, agent);
+      }
       if (!action && req.method === "GET") return send(res, 200, agent);
       if (!action && req.method === "DELETE") {
         agents.delete(id);

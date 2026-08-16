@@ -4,7 +4,10 @@ import type {
   AuditFilters,
   ChatEvent,
   DiscoveredAgent,
+  ImageSettings,
+  ImproveField,
   LoginSession,
+  ModelOption,
   NewAgentInput,
   Provider,
   Routine,
@@ -69,6 +72,99 @@ export const api = {
   deleteAgent(id: string): Promise<void> {
     return fetch(`${BASE}/agents/${id}`, { method: "DELETE" }).then((r) => {
       if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+    });
+  },
+
+  updateAgent(
+    id: string,
+    patch: {
+      name?: string;
+      role?: string;
+      personality?: string;
+      avatar_color?: string;
+      model_provider?: string;
+      model_name?: string;
+    },
+  ): Promise<Agent> {
+    return fetch(`${BASE}/agents/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    }).then((r) => json<Agent>(r));
+  },
+
+  getSoul(id: string): Promise<{ content: string; exists: boolean }> {
+    return fetch(`${BASE}/agents/${id}/soul`).then((r) =>
+      json<{ content: string; exists: boolean }>(r),
+    );
+  },
+
+  putSoul(id: string, content: string): Promise<{ content: string }> {
+    return fetch(`${BASE}/agents/${id}/soul`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content }),
+    }).then((r) => json<{ content: string }>(r));
+  },
+
+  improve(input: {
+    field: ImproveField;
+    text: string;
+    agent_context: { name: string; role: string };
+  }): Promise<{ text: string }> {
+    return fetch(`${BASE}/assist/improve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }).then((r) => json<{ text: string }>(r));
+  },
+
+  generateAvatar(id: string): Promise<Agent> {
+    return fetch(`${BASE}/agents/${id}/avatar`, { method: "POST" }).then((r) =>
+      json<Agent>(r),
+    );
+  },
+
+  avatarUrl(id: string, version: number): string {
+    return `${BASE}/agents/${id}/avatar?v=${version}`;
+  },
+
+  imageSettings(): Promise<ImageSettings> {
+    return fetch(`${BASE}/settings/image`).then((r) => json<ImageSettings>(r));
+  },
+
+  setImageSettings(input: {
+    key?: string;
+    base_url?: string;
+    model?: string;
+  }): Promise<ImageSettings> {
+    return fetch(`${BASE}/settings/image`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }).then((r) => json<ImageSettings>(r));
+  },
+
+  models(): Promise<{ options: ModelOption[] }> {
+    return fetch(`${BASE}/models`).then((r) => json<{ options: ModelOption[] }>(r));
+  },
+
+  addCustomModel(input: {
+    label: string;
+    base_url: string;
+    model: string;
+    api_key: string;
+  }): Promise<{ model: { id: string } }> {
+    return fetch(`${BASE}/models/custom`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }).then((r) => json<{ model: { id: string } }>(r));
+  },
+
+  deleteCustomModel(id: string): Promise<void> {
+    return fetch(`${BASE}/models/custom/${id}`, { method: "DELETE" }).then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
     });
   },
 

@@ -27,6 +27,15 @@ vi.mock("../api", () => ({
     importCandidates: vi.fn().mockResolvedValue({ candidates: [] }),
     importAgent: vi.fn(),
     routines: vi.fn().mockResolvedValue({ routines: [] }),
+    imageSettings: vi
+      .fn()
+      .mockResolvedValue({ key_set: false, base_url: "", model: "" }),
+    getTelegram: vi.fn().mockResolvedValue({
+      enabled: false,
+      allowed_users: "",
+      token_set: false,
+      imported: false,
+    }),
   },
 }));
 

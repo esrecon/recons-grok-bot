@@ -166,7 +166,13 @@ export function ChatView({
       <header className="flex items-center justify-between border-b border-hairline px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <div className="flex items-center gap-2 rounded-full bg-surface px-2.5 py-1">
-            <BotAvatar id={agent.id} color={agent.avatar_color} size={26} title={agent.name} />
+            <BotAvatar
+              id={agent.id}
+              color={agent.avatar_color}
+              size={26}
+              title={agent.name}
+              imageVersion={agent.avatar_version}
+            />
             <span className="text-[15px] font-semibold text-text-primary">
               {agent.name}
             </span>
@@ -199,7 +205,13 @@ export function ChatView({
         {messages.length === 0 && (
           <div className="grid h-full place-items-center text-center">
             <div>
-              <BotAvatar id={agent.id} color={agent.avatar_color} size={64} title={agent.name} />
+              <BotAvatar
+                id={agent.id}
+                color={agent.avatar_color}
+                size={64}
+                title={agent.name}
+                imageVersion={agent.avatar_version}
+              />
               <p className="mt-3 text-[15px] font-semibold text-text-primary">
                 {agent.name}
               </p>

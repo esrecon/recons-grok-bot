@@ -25,8 +25,8 @@ from typing import Callable
 import yaml
 from jinja2 import Environment, PackageLoader, select_autoescape
 
-from . import team, telegram
-from .config import A2A_PORT_BASE, Settings
+from . import custom_models, soul, team, telegram
+from .config import A2A_PORT_BASE, Settings, TIERS
 from .mesh import Mesh, TokenFactory, _default_token
 from .models import AgentRecord, AgentSpec, AgentStatus, PromoteReport, slugify
 from .roster import Roster
@@ -537,6 +537,169 @@ class Provisioner:
             except (subprocess.CalledProcessError, OSError):
                 log.warning("restart of %s after telegram change failed", agent_id, exc_info=True)
         return record
+
+    def update_agent(
+        self,
+        agent_id: str,
+        *,
+        name: str | None = None,
+        role: str | None = None,
+        personality: str | None = None,
+        avatar_color: str | None = None,
+        model_provider: str | None = None,
+        model_name: str | None = None,
+    ) -> AgentRecord:
+        """Edit an agent's identity, persona fields, or model from the Customize tab.
+
+        `None` means "leave alone". The agent's id never changes — it is
+        load-bearing (home path, unit name, A2A peer ids, ledger key), so a
+        rename is display-only. model_provider/model_name come as a pair; both
+        empty strings reset the agent to its tier's default model.
+
+        Blast radius follows what each field reaches: name/role live in every
+        peer's managed SOUL section, so those changes sync the team and restart
+        all running managed agents (the set_lead pattern); personality lives
+        only in this agent's SOUL and the model only in its config, so those
+        restart just the target. Colour is roster-only.
+        """
+        record = self._roster.get(agent_id)
+        if record is None:
+            raise ProvisioningError(f"no such agent: {agent_id}")
+
+        old_name = record.name
+        changed: set[str] = set()
+
+        # Validate everything before mutating anything.
+        if name is not None and name.strip() != record.name:
+            proposed = name.strip()
+            for other in self._roster.load():
+                if other.id != agent_id and other.name.strip().lower() == proposed.lower():
+                    raise ProvisioningError(f"an agent named '{proposed}' already exists")
+            changed.add("name")
+        model_touched = model_provider is not None or model_name is not None
+        new_provider, new_model = record.model_provider, record.model_name
+        if model_touched:
+            if record.imported:
+                raise ImportedAgentError(
+                    f"'{record.name}' is imported — it runs against its own "
+                    "config, which this platform never rewrites; promote it "
+                    "first to manage its model here"
+                )
+            mp = (model_provider or "").strip()
+            mn = (model_name or "").strip()
+            if bool(mp) != bool(mn):
+                raise ProvisioningError(
+                    "model_provider and model_name go together — set both, or "
+                    "both empty to reset to the tier default"
+                )
+            if mp and mp not in {t.provider for t in TIERS.values()}:
+                if custom_models.get(self._s, mp) is None:
+                    raise ProvisioningError(f"unknown model provider: {mp}")
+            new_provider, new_model = (mp or None, mn or None)
+            if (new_provider, new_model) != (record.model_provider, record.model_name):
+                changed.add("model")
+
+        if name is not None and "name" in changed:
+            record.name = name.strip()
+        if role is not None and role.strip() != record.role:
+            record.role = role.strip()
+            changed.add("role")
+        if personality is not None and personality.strip() != record.personality:
+            record.personality = personality.strip()
+            changed.add("personality")
+        if avatar_color is not None and avatar_color != record.avatar_color:
+            record.avatar_color = avatar_color
+            changed.add("avatar_color")
+        record.model_provider, record.model_name = new_provider, new_model
+
+        if not changed:
+            return record
+
+        # Field assignment skips pydantic validation — re-validate, as promote does.
+        record = AgentRecord.model_validate(record.model_dump())
+        self._roster.upsert(record)
+
+        # Keep the template-derived SOUL lines in step (user content untouched;
+        # imported homes never written — the never-touch promise holds).
+        if changed & {"name", "role", "personality"} and not record.imported:
+            soul.apply_patch(
+                self._s,
+                record,
+                old_name=old_name if "name" in changed else None,
+                role_changed="role" in changed,
+                personality_changed="personality" in changed,
+            )
+
+        records = self._roster.load()
+        if changed & {"name", "model"}:
+            # config.yaml/service.env carry the display name in comments and
+            # the model block; regeneration is cheap and idempotent.
+            self._mesh.rewire(records)
+        if changed & {"name", "role"}:
+            # Every peer's managed team section names this agent and its job.
+            team.sync(self._s, records)
+            restart_ids = [
+                r.id
+                for r in records
+                if not r.imported and r.status is AgentStatus.RUNNING
+            ]
+        elif changed & {"model", "personality"}:
+            restart_ids = (
+                [agent_id]
+                if not record.imported and record.status is AgentStatus.RUNNING
+                else []
+            )
+        else:
+            restart_ids = []
+        for rid in restart_ids:
+            try:
+                self._services.restart(self._s.unit_name(rid))
+            except (subprocess.CalledProcessError, OSError):
+                log.warning("restart of %s after update failed", rid, exc_info=True)
+        return record
+
+    def set_avatar_version(self, agent_id: str, version: int) -> AgentRecord:
+        record = self._roster.get(agent_id)
+        if record is None:
+            raise ProvisioningError(f"no such agent: {agent_id}")
+        record.avatar_version = version
+        self._roster.upsert(record)
+        return record
+
+    def read_soul(self, agent_id: str) -> tuple[str, bool]:
+        """(content, exists) for the agent's SOUL.md."""
+        record = self._roster.get(agent_id)
+        if record is None:
+            raise ProvisioningError(f"no such agent: {agent_id}")
+        path = soul.soul_path(self._s, record)
+        if not path.is_file():
+            return "", False
+        return path.read_text("utf-8"), True
+
+    def write_soul(self, agent_id: str, content: str) -> str:
+        """Save an edited SOUL.md; returns the file's final text.
+
+        The managed team fence is repaired server-side after the write, so an
+        edit (or an over-eager LLM rewrite) can never lose it — same consent
+        rule as team.sync: managed agents always carry it, an imported home
+        only keeps one it already had in the submitted content.
+        """
+        record = self._roster.get(agent_id)
+        if record is None:
+            raise ProvisioningError(f"no such agent: {agent_id}")
+        path = soul.soul_path(self._s, record)
+        text = content if content.endswith("\n") or not content else content + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, "utf-8")
+        if (not record.imported) or team.TEAM_BEGIN in text:
+            team.upsert_section(path, team.render_section(record, self._roster.load()))
+        # Gateways read SOUL.md at start — reload a running managed one now.
+        if not record.imported and record.status is AgentStatus.RUNNING:
+            try:
+                self._services.restart(self._s.unit_name(agent_id))
+            except (subprocess.CalledProcessError, OSError):
+                log.warning("restart of %s after soul edit failed", agent_id, exc_info=True)
+        return path.read_text("utf-8")
 
     def set_status(self, agent_id: str, status: AgentStatus) -> AgentRecord:
         record = self._roster.get(agent_id)

@@ -29,13 +29,25 @@ WRITABLE_KEYS = frozenset(
         "ANTHROPIC_AUTH_MODE",
         "CLAUDE_WRAPPER_BASE_URL",
         "CLAUDE_WRAPPER_API_KEY",
+        "IMAGE_API_KEY",
+        "IMAGE_API_BASE_URL",
+        "IMAGE_API_MODEL",
         "RECONS_WEBHOOK_SECRET",
         "RECONS_OPERATOR_USER",
         "RECONS_OPERATOR_PASSWORD_HASH",
     }
 )
 
+# Keys minted by the custom-model registry (custom_models.py) are the one
+# open-ended family: the CUSTOM_ prefix + _API_KEY suffix keeps the injectable
+# surface to credentials the operator deliberately created, nothing else.
+_CUSTOM_KEY = re.compile(r"^CUSTOM_[A-Z0-9_]+_API_KEY$")
+
 _LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
+
+
+def _writable(key: str) -> bool:
+    return key in WRITABLE_KEYS or bool(_CUSTOM_KEY.match(key))
 
 
 class SecretsError(ValueError):
@@ -74,11 +86,18 @@ class SecretsStore:
     def configured_keys(self) -> set[str]:
         return {k for k, v in self._parsed().items() if v.strip()}
 
+    def as_env(self) -> dict[str, str]:
+        """Non-empty values, for subprocess environments.
+
+        Internal use only — same rule as get(): never returned over the API.
+        """
+        return {k: v.strip() for k, v in self._parsed().items() if v.strip()}
+
     # -- writing ---------------------------------------------------------------
     def set_many(self, values: dict[str, str]) -> None:
         """Set or replace keys, preserving comments, ordering and unknown keys."""
         for key in values:
-            if key not in WRITABLE_KEYS:
+            if not _writable(key):
                 raise SecretsError(f"{key} is not a writable setting")
         for key, value in values.items():
             if "\n" in value or "\r" in value:
@@ -105,7 +124,7 @@ class SecretsStore:
         self._write(lines)
 
     def unset(self, key: str) -> None:
-        if key not in WRITABLE_KEYS:
+        if not _writable(key):
             raise SecretsError(f"{key} is not a writable setting")
         self.set_many({key: ""})
 

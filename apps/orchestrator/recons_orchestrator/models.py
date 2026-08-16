@@ -100,8 +100,13 @@ class AgentRecord(BaseModel):
     telegram_allowed_users: str = ""
     # Captured at promotion so an adopted agent keeps the provider/model it
     # arrived with instead of falling back to the tier constants (config.py).
+    # Also settable from the Customize tab: when both are present they override
+    # the tier's model in the generated config (mesh._write_config).
     model_provider: str | None = None
     model_name: str | None = None
+    # Bumped whenever a generated headshot is (re)saved; the dashboard uses it
+    # as a cache-buster (/api/agents/{id}/avatar?v=N). None = no image yet.
+    avatar_version: int | None = None
 
     @model_validator(mode="after")
     def _check_telegram(self) -> "AgentRecord":

@@ -15,7 +15,16 @@ soul_file: SOUL.md   # VERIFY key name (persona/identity file)
 model:
   provider: {{ tier.provider }}
   default: {{ tier.model }}
-{% if tier.fallbacks %}fallback_providers:                   # VERIFY key name
+{% if custom_provider %}# Operator-added OpenAI-compatible provider (Customize tab). The key rides in
+# via ${ENV} from shared secrets.env (the unit's EnvironmentFile) — the value
+# is never written into this file. VERIFY the providers block shape and that
+# Hermes expands ${ENV} for api_key.
+providers:
+  {{ custom_provider.id }}:
+    type: openai-compatible           # VERIFY provider type id
+    base_url: "{{ custom_provider.base_url }}"
+    api_key: "${{ '{' }}{{ custom_provider.key_env }}}"
+{% endif %}{% if tier.fallbacks %}fallback_providers:                   # VERIFY key name
 {% for fb in tier.fallbacks %}  - {{ fb }}
 {% endfor %}{% endif %}
 

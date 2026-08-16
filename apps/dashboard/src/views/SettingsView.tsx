@@ -1,5 +1,6 @@
 import type { Agent, Provider } from "../types";
 import { ProviderCard } from "../components/ProviderCard";
+import { ImageCard } from "../components/ImageCard";
 import { ImportAgents } from "../components/ImportAgents";
 import { TelegramCard } from "../components/TelegramCard";
 
@@ -32,6 +33,11 @@ export function SettingsView({
             <ProviderCard key={p.id} provider={p} onChanged={onChanged} />
           ))}
         </div>
+
+        <h2 className="mb-2 mt-7 text-sm font-semibold text-text-primary">
+          Avatars
+        </h2>
+        <ImageCard />
 
         <h2 className="mb-2 mt-7 text-sm font-semibold text-text-primary">
           Existing Hermes agents
