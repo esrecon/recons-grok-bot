@@ -181,6 +181,50 @@ for env in "$RECONS_ROOT"/agents/*/service.env; do
   fi
 done
 
+section "Orchestrator"
+# A service can crash-loop for hours while the dashboard still answers, because
+# an orphan process is holding the port. That state looks healthy from a browser
+# and is anything but: the orphan runs without the environment the unit
+# provides, so agent creation fails with a 500 that has no obvious cause.
+SCOPE_FILE="$RECONS_ROOT/systemd-scope"
+if [ -r "$SCOPE_FILE" ] && [ "$(cat "$SCOPE_FILE")" = "user" ]; then
+  SYSTEMCTL=(systemctl --user)
+else
+  SYSTEMCTL=(systemctl)
+fi
+
+if command -v systemctl >/dev/null; then
+  STATE="$("${SYSTEMCTL[@]}" is-active recons-orchestrator 2>/dev/null || true)"
+  case "$STATE" in
+    active)  pass "orchestrator service is running" ;;
+    activating)
+      fail "orchestrator is stuck restarting (not running)"
+      printf '       %s\n' \
+        "Almost always: something else already holds port 8330, so the service" \
+        "cannot bind and systemd retries forever. Find and clear it:" \
+        "    ss -tlnp | grep 8330" \
+        "    pkill -f 'uvicorn recons_orchestrator'" \
+        "    ${SYSTEMCTL[*]} restart recons-orchestrator"
+      ;;
+    *)       fail "orchestrator service is '${STATE:-unknown}'" ;;
+  esac
+
+  # Is the port owned by the service, or by something systemd doesn't manage?
+  MAINPID="$("${SYSTEMCTL[@]}" show -p MainPID --value recons-orchestrator 2>/dev/null || echo 0)"
+  PORTPID="$(ss -tlnpH 2>/dev/null | awk '/127\.0\.0\.1:8330/ {print $0}' \
+             | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 || true)"
+  if [ -n "$PORTPID" ] && [ "$MAINPID" != "0" ] && [ "$PORTPID" != "$MAINPID" ]; then
+    fail "port 8330 is held by pid $PORTPID, not the service (pid $MAINPID)"
+    printf '       %s\n' "That orphan runs without the unit's environment — kill it and restart."
+  fi
+fi
+
+if curl -fsS http://127.0.0.1:8330/api/health >/dev/null 2>&1; then
+  pass "orchestrator answering on 127.0.0.1:8330"
+else
+  fail "orchestrator is not answering on 127.0.0.1:8330"
+fi
+
 section "Hermes version"
 if command -v hermes >/dev/null; then
   V=$(hermes --version 2>/dev/null | head -1 || echo "unknown")
