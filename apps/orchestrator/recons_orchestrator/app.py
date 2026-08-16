@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from .config import Settings
+from .discovery import discover
 from .ledger import Ledger
 from .models import AgentRecord, AgentSpec, AgentStatus
 from .providers import ProviderService
@@ -67,6 +68,12 @@ class RoutineInput(BaseModel):
 
 class ApiKeyInput(BaseModel):
     key: str
+
+
+class ImportInput(BaseModel):
+    home: str
+    name: str | None = None
+    role: str = ""
 
 
 @asynccontextmanager
@@ -210,6 +217,29 @@ def create_app() -> FastAPI:
         body = await request.body()
         status, payload = receiver().handle(body, dict(request.headers))
         return JSONResponse(status_code=status, content=payload)
+
+    # --- importing agents that already exist on this machine ------------------
+    @app.get("/api/import/candidates")
+    def import_candidates(prov: Provisioner = Depends(get_provisioner)) -> dict:
+        from pathlib import Path as _Path
+
+        known = {
+            _Path(r.home) for r in prov.list_agents() if r.home
+        }
+        return {"candidates": [c.to_json() for c in discover(known)]}
+
+    @app.post("/api/import", response_model=AgentRecord, status_code=201)
+    def import_agent(
+        body: ImportInput, prov: Provisioner = Depends(get_provisioner)
+    ) -> AgentRecord:
+        from pathlib import Path as _Path
+
+        try:
+            return prov.import_agent(_Path(body.home), body.name, body.role)
+        except ProvisioningError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # --- skills (shared library + teach-mode approval queue) ------------------
     @app.get("/api/skills")

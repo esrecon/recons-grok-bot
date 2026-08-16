@@ -157,7 +157,7 @@ export function App() {
         {view === "routines" && <RoutinesView agents={agents} />}
         {view === "audit" && <AuditView agents={agents} />}
         {view === "settings" && (
-          <SettingsView providers={setup?.providers ?? []} onChanged={refresh} />
+          <SettingsView providers={setup?.providers ?? []} agents={agents} onChanged={refresh} />
         )}
       </main>
 

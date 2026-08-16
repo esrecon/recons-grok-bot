@@ -72,6 +72,12 @@ const providerState = {
 };
 const logins = new Map();
 
+// Hermes agents "already on the machine", for the import flow.
+const discovered = [
+  { id: "hermes", name: "Hermes", home: "/root/.hermes", role: "Existing default agent", model: "gpt-5.6-terra" },
+  { id: "hermes-ops", name: "Ops", home: "/root/.hermes-ops", role: "Server chores", model: "hermes-4-70b" },
+];
+
 function providerList() {
   return [
     {
@@ -90,11 +96,11 @@ function providerList() {
         : "Sign in with the ChatGPT subscription you already pay for.",
     },
     {
-      id: "anthropic", label: "Claude", tier: "lead", method: "service",
+      id: "anthropic", label: "Claude", tier: "lead", method: "oauth",
       state: providerState.anthropic ? "configured" : "not_configured",
       detail: providerState.anthropic
-        ? "Using a Claude Console API key (pay-as-you-go)."
-        : "Optional. Start the wrapper service, or switch to a Console API key.",
+        ? "Signed in with your Claude subscription."
+        : "Sign in with the Claude subscription you already pay for.",
       docs: "docs/40-providers-and-tos.md",
     },
   ];
@@ -215,6 +221,35 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { providers: providerList() });
     }
 
+    if (pathname === "/api/import/candidates") {
+      return send(res, 200, {
+        candidates: discovered.map((d) => ({
+          ...d,
+          already_imported: agents.has(d.id),
+        })),
+      });
+    }
+    if (pathname === "/api/import" && req.method === "POST") {
+      const body = await readBody(req);
+      const found = discovered.find((d) => d.home === body.home);
+      if (!found) return send(res, 404, { detail: "no such home" });
+      if (agents.has(found.id)) return send(res, 409, { detail: "already imported" });
+      const rec = {
+        id: found.id,
+        name: found.name,
+        role: found.role || "Imported Hermes agent",
+        tier: "workhorse",
+        avatar_color: COLORS[agents.size % COLORS.length],
+        status: "running",
+        is_lead: agents.size === 0,
+        created_at: "2026-08-16T09:00:00+00:00",
+        home: found.home,
+        imported: true,
+      };
+      agents.set(rec.id, rec);
+      return send(res, 201, rec);
+    }
+
     const pk = pathname.match(/^\/api\/providers\/([^/]+)\/key$/);
     if (pk) {
       const id = pk[1];
@@ -234,19 +269,24 @@ const server = http.createServer(async (req, res) => {
     const pl = pathname.match(/^\/api\/providers\/([^/]+)\/login$/);
     if (pl && req.method === "POST") {
       const id = pl[1];
-      if (id !== "openai") return send(res, 400, { detail: "no subscription sign-in" });
+      if (id !== "openai" && id !== "anthropic") {
+        return send(res, 400, { detail: "no subscription sign-in" });
+      }
       const loginId = `login-${logins.size + 1}`;
       // Simulate the device-code flow: link+code now, success shortly after.
       const session = {
         id: loginId, provider: id, status: "awaiting_user",
-        url: "https://auth.example.com/device", code: "WXYZ-1234",
-        message: "", command: "hermes auth add openai", output: [],
+        url: id === "anthropic"
+          ? "https://claude.ai/oauth/device"
+          : "https://auth.example.com/device",
+        code: id === "anthropic" ? "ABCD-EFGH" : "WXYZ-1234",
+        message: "", command: `hermes auth add ${id}`, output: [],
       };
       logins.set(loginId, session);
       setTimeout(() => {
         session.status = "success";
         session.message = "Signed in. Your agents can use this subscription now.";
-        providerState.openai = "oauth";
+        providerState[id] = "oauth";
       }, 1200);
       return send(res, 201, session);
     }

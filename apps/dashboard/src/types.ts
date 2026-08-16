@@ -74,6 +74,16 @@ export interface Provider {
   docs?: string;
 }
 
+// A Hermes agent already on the machine that can be adopted into the roster.
+export interface DiscoveredAgent {
+  id: string;
+  name: string;
+  home: string;
+  role: string;
+  model: string;
+  already_imported: boolean;
+}
+
 export interface SetupStatus {
   providers: Provider[];
   has_provider: boolean;

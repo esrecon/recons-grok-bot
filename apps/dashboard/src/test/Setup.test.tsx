@@ -23,6 +23,8 @@ vi.mock("../api", () => ({
     audit: vi.fn().mockResolvedValue({ events: [], count: 0 }),
     auditExportUrl: () => "/api/audit/export.jsonl",
     skills: vi.fn().mockResolvedValue({ shared: [], pending: [] }),
+    importCandidates: vi.fn().mockResolvedValue({ candidates: [] }),
+    importAgent: vi.fn(),
     routines: vi.fn().mockResolvedValue({ routines: [] }),
   },
 }));

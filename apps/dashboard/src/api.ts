@@ -3,6 +3,7 @@ import type {
   AuditEvent,
   AuditFilters,
   ChatEvent,
+  DiscoveredAgent,
   LoginSession,
   NewAgentInput,
   Provider,
@@ -61,6 +62,20 @@ export const api = {
 
   auditExportUrl(): string {
     return `${BASE}/audit/export.jsonl`;
+  },
+
+  importCandidates(): Promise<{ candidates: DiscoveredAgent[] }> {
+    return fetch(`${BASE}/import/candidates`).then((r) =>
+      json<{ candidates: DiscoveredAgent[] }>(r),
+    );
+  },
+
+  importAgent(input: { home: string; name?: string; role?: string }): Promise<Agent> {
+    return fetch(`${BASE}/import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }).then((r) => json<Agent>(r));
   },
 
   setup(): Promise<SetupStatus> {

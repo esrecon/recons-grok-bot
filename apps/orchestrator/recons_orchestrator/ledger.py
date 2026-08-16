@@ -281,7 +281,9 @@ class Ledger:
     def collect(self) -> list[LedgerEvent]:
         events: list[LedgerEvent] = []
         for rec in self._roster.load():
-            home = self._s.home_dir(rec.id)
+            # Imported agents keep their original Hermes home; their history is
+            # just as much part of the audit trail as a provisioned agent's.
+            home = Path(rec.home) if rec.home else self._s.home_dir(rec.id)
             events += read_state_db(rec.id, home / "state.db")
             events += read_a2a_audit(rec.id, home / "a2a_audit.jsonl")
             events += read_cron_db(rec.id, home / "cron" / "executions.db")

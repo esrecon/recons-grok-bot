@@ -78,3 +78,7 @@ class AgentRecord(BaseModel):
     status: AgentStatus = AgentStatus.RUNNING
     is_lead: bool = False
     created_at: str  # ISO-8601; injected so provisioning stays deterministic in tests
+    # Agents adopted from an existing Hermes install keep their own home and
+    # own their config: we read their history but never rewrite their files.
+    home: str | None = None
+    imported: bool = False

@@ -1,15 +1,19 @@
-import type { Provider } from "../types";
+import type { Agent, Provider } from "../types";
 import { ProviderCard } from "../components/ProviderCard";
+import { ImportAgents } from "../components/ImportAgents";
 
 // Providers and their connection state, manageable at any time. Keys are
 // write-only: you can replace or disconnect, never read one back.
 export function SettingsView({
   providers,
+  agents,
   onChanged,
 }: {
   providers: Provider[];
+  agents: Agent[];
   onChanged: () => void;
 }) {
+  const usedColors = agents.map((a) => a.avatar_color);
   return (
     <section className="flex h-full flex-1 flex-col bg-bg">
       <header className="border-b border-hairline px-4 py-3">
@@ -27,6 +31,11 @@ export function SettingsView({
             <ProviderCard key={p.id} provider={p} onChanged={onChanged} />
           ))}
         </div>
+
+        <h2 className="mb-2 mt-7 text-sm font-semibold text-text-primary">
+          Existing Hermes agents
+        </h2>
+        <ImportAgents usedColors={usedColors} onImported={onChanged} />
 
         <h2 className="mb-2 mt-7 text-sm font-semibold text-text-primary">
           Where things live

@@ -1,6 +1,7 @@
 import type { SetupStatus } from "../types";
 import { ProviderCard } from "../components/ProviderCard";
 import { BotAvatar } from "../components/BotAvatar";
+import { ImportAgents } from "../components/ImportAgents";
 
 // Shown until there's at least one provider and one agent. This is the whole
 // setup story: connect a brain, hire a teammate. No terminal, no files.
@@ -61,6 +62,13 @@ export function SetupWizard({
               Connect a provider first.
             </p>
           )}
+
+          <div className="mt-5">
+            <h3 className="mb-2 text-sm font-semibold text-text-primary">
+              …or bring in agents you already have
+            </h3>
+            <ImportAgents usedColors={[]} onImported={onChanged} />
+          </div>
         </Step>
       </div>
     </section>
