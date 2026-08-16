@@ -8,7 +8,7 @@ SSE events as it is produced.
 The exact CLI syntax is version-fragile (VERIFY), so the command is a
 template, overridable without a code change:
 
-    RECONS_CHAT_CMD='hermes -p {text}'     # default
+    RECONS_CHAT_CMD='hermes -z {text}'     # default (verified against the CLI reference)
 
 `{text}` is substituted as a single argv element (never through a shell), so
 message content cannot inject options or commands. If the command fails, the
@@ -37,7 +37,7 @@ log = logging.getLogger("recons.chat")
 # are garbage. Strip CSI/OSC escape sequences from every token.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 
-DEFAULT_CHAT_CMD = "hermes -p {text}"
+DEFAULT_CHAT_CMD = "hermes -z {text}"
 
 
 def ensure_shared_auth(agent_home: Path) -> None:
