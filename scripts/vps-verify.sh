@@ -114,7 +114,11 @@ if command -v tailscale >/dev/null; then
         "    tailscale serve --bg --https=443 http://127.0.0.1:8330" \
         "(turning funnel off clears the serve config too, so re-run this after.)"
     fi
-    if tailscale funnel status 2>/dev/null | grep -qi 'funnel.*on\|https://'; then
+    # Funnel and serve share one status table; a serve-only config still prints
+    # the https:// URL (annotated "tailnet only"). Matching any URL therefore
+    # false-positived the moment serve was configured — the discriminator is the
+    # literal "Funnel on" annotation, which serve-only output never contains.
+    if tailscale serve status 2>/dev/null | grep -qi 'funnel on'; then
       fail "FUNNEL IS ON — this exposes the dashboard to the public internet"
       printf '       %s\n' \
         "Anyone who finds the URL can reach a panel that runs commands on this" \
@@ -191,6 +195,18 @@ if [ -r "$SCOPE_FILE" ] && [ "$(cat "$SCOPE_FILE")" = "user" ]; then
   SYSTEMCTL=(systemctl --user)
 else
   SYSTEMCTL=(systemctl)
+fi
+
+# The same unit installed in BOTH scopes is exactly how this install ended up
+# with two orchestrators fighting over port 8330 — one crash-looping while the
+# other answered. Catch it by presence on disk, not by state.
+USER_UNIT="$HOME/.config/systemd/user/recons-orchestrator.service"
+SYS_UNIT="/etc/systemd/system/recons-orchestrator.service"
+if [ -f "$USER_UNIT" ] && [ -f "$SYS_UNIT" ]; then
+  fail "orchestrator unit installed in BOTH user and system scope"
+  printf '       %s\n' \
+    "The two instances will fight over port 8330. Keep the recorded scope" \
+    "($(cat "$RECONS_ROOT/systemd-scope" 2>/dev/null || echo unknown)) and remove the other unit file, then daemon-reload."
 fi
 
 if command -v systemctl >/dev/null; then

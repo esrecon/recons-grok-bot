@@ -82,3 +82,6 @@ class AgentRecord(BaseModel):
     # own their config: we read their history but never rewrite their files.
     home: str | None = None
     imported: bool = False
+    # Human-readable reason when status is ERROR (e.g. the systemd failure that
+    # kept the agent's gateway from starting). Empty otherwise.
+    status_detail: str = ""

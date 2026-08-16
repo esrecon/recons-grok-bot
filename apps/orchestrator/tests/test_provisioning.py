@@ -108,6 +108,40 @@ def test_pause_and_resume(provisioner, settings, services):
     assert resumed.status is AgentStatus.RUNNING
 
 
+def test_create_survives_a_systemd_failure_with_error_status(settings, fixed_clock, token_factory):
+    """By the time services start, the agent exists — a systemd failure must
+    mark it errored (with the reason), never surface as a 500 that looks like
+    nothing happened. This is exactly what a real install hit."""
+    import subprocess
+
+    from recons_orchestrator.provisioning import Provisioner
+
+    class FailingServiceManager:
+        def daemon_reload(self):
+            raise subprocess.CalledProcessError(
+                1, ["systemctl", "--user", "daemon-reload"]
+            )
+
+        def enable_now(self, unit): ...
+        def stop(self, unit): ...
+        def restart(self, unit): ...
+        def disable(self, unit): ...
+
+    prov = Provisioner(
+        settings, services=FailingServiceManager(),
+        clock=fixed_clock, token_factory=token_factory,
+    )
+    rec = prov.create_agent(_spec("Sophie", "Email and calendar"))
+
+    assert rec.status is AgentStatus.ERROR
+    assert "systemctl" in rec.status_detail
+    # The agent is real: files on disk, persisted in the roster with the reason.
+    assert (settings.home_dir("sophie") / "SOUL.md").exists()
+    stored = prov.get_agent("sophie")
+    assert stored is not None and stored.status is AgentStatus.ERROR
+    assert stored.status_detail == rec.status_detail
+
+
 def test_remove_agent_rewires_and_frees_port(provisioner, settings, services):
     provisioner.create_agent(_spec("Recon"))
     b = provisioner.create_agent(_spec("Scout"))

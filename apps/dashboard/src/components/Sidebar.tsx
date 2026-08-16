@@ -65,6 +65,7 @@ export function Sidebar({
               key={a.id}
               type="button"
               onClick={() => onSelectAgent(a.id)}
+              title={a.status === "error" ? a.status_detail || "Agent failed to start" : undefined}
               className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left ${
                 active ? "bg-surface-2" : "hover:bg-surface-2/60"
               }`}

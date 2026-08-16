@@ -21,15 +21,21 @@ from typing import Literal, Protocol
 Scope = Literal["user", "system"]
 
 
-def detect_scope(runner=subprocess.run, root: Path | None = None) -> Scope:
+def detect_scope(
+    runner=subprocess.run, root: Path | None = None, euid: int | None = None
+) -> Scope:
     """Which systemd scope this install uses.
 
     Order matters. The scope file is written by vps-bootstrap.sh at install time
     and is authoritative: probing gives different answers in different
     environments (an interactive root session has a user bus, the same account
     under `sudo` does not), so two components that each probe can disagree and
-    install units in one scope while driving them in the other. Probing is only
-    the last resort.
+    install units in one scope while driving them in the other.
+
+    Root skips the probe entirely: an interactive root session often has a user
+    bus, but a system service run as root does not — and this code runs inside
+    one. Trusting root's probe once produced two rival installs of the same
+    service. Probing is the last resort, for unprivileged accounts only.
     """
     override = os.environ.get("RECONS_SYSTEMD_SCOPE", "").strip().lower()
     if override in ("user", "system"):
@@ -42,6 +48,9 @@ def detect_scope(runner=subprocess.run, root: Path | None = None) -> Scope:
             return recorded  # type: ignore[return-value]
     except OSError:
         pass
+
+    if (euid if euid is not None else os.geteuid()) == 0:
+        return "system"
 
     try:
         result = runner(
