@@ -14,10 +14,10 @@ soul_file: SOUL.md   # VERIFY key name (persona/identity file)
 # level; here we only pick this agent's model and its fallback chain.
 model:
   provider: {{ tier.provider }}
-  default: {{ tier.model }}          # VERIFY model id
-fallback_providers:                   # VERIFY key name
+  default: {{ tier.model }}
+{% if tier.fallbacks %}fallback_providers:                   # VERIFY key name
 {% for fb in tier.fallbacks %}  - {{ fb }}
-{% endfor %}
+{% endfor %}{% endif %}
 
 # --- Shared skills ------------------------------------------------------------
 # All agents read the same shared skill library so a skill taught to one is

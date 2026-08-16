@@ -108,6 +108,69 @@ def test_pause_and_resume(provisioner, settings, services):
     assert resumed.status is AgentStatus.RUNNING
 
 
+def test_workhorse_inherits_provider_from_the_default_hermes_config(
+    provisioner, settings, monkeypatch, tmp_path
+):
+    """Hermes's own sign-in writes working provider/model values to the default
+    home's config. Those beat any constant of ours — a hardcoded 'openai' once
+    made every workhorse agent fail with "Unknown provider" while the correct
+    id (openai-codex) sat in that file all along."""
+    default_home = tmp_path / "default-hermes"
+    default_home.mkdir()
+    (default_home / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: gpt-5.6-terra\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    provisioner.create_agent(_spec("Sophie", "Email", ModelTier.WORKHORSE))
+    cfg = yaml.safe_load((settings.home_dir("sophie") / "config.yaml").read_text())
+    assert cfg["model"]["provider"] == "openai-codex"
+    assert cfg["model"]["default"] == "gpt-5.6-terra"
+
+
+def test_workhorse_falls_back_to_verified_constants_without_a_default_config(
+    provisioner, settings, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nowhere"))
+    provisioner.create_agent(_spec("Sophie", "Email", ModelTier.WORKHORSE))
+    cfg = yaml.safe_load((settings.home_dir("sophie") / "config.yaml").read_text())
+    # The constants themselves are the values a live v0.20.1 sign-in printed.
+    assert cfg["model"]["provider"] == "openai-codex"
+    assert cfg["model"]["default"] == "gpt-5.6-terra"
+
+
+def test_startup_rewire_deploys_config_fixes(settings, monkeypatch, tmp_path):
+    """A template fix must reach existing agents on restart, not wait for the
+    next roster change."""
+    from fastapi.testclient import TestClient
+
+    from recons_orchestrator.app import create_app
+    from recons_orchestrator.provisioning import Provisioner
+    from recons_orchestrator.services import RecordingServiceManager
+
+    default_home = tmp_path / "default-hermes"
+    default_home.mkdir()
+    (default_home / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: gpt-5.6-terra\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("RECONS_ROOT", str(settings.root))
+
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(_spec("Sophie", "Email", ModelTier.WORKHORSE))
+
+    # Simulate the stale, broken config the field hit.
+    cfg_path = settings.home_dir("sophie") / "config.yaml"
+    cfg_path.write_text(cfg_path.read_text().replace("openai-codex", "openai"))
+    assert yaml.safe_load(cfg_path.read_text())["model"]["provider"] == "openai"
+
+    # Entering the TestClient context runs the lifespan (startup).
+    with TestClient(create_app()):
+        pass
+
+    assert yaml.safe_load(cfg_path.read_text())["model"]["provider"] == "openai-codex"
+
+
 def test_create_survives_a_systemd_failure_with_error_status(settings, fixed_clock, token_factory):
     """By the time services start, the agent exists — a systemd failure must
     mark it errored (with the reason), never surface as a 500 that looks like
