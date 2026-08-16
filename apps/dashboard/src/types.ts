@@ -11,6 +11,7 @@ export interface Agent {
   tier: ModelTier;
   avatar_color: string;
   status: AgentStatus;
+  status_detail?: string;
   is_lead: boolean;
   created_at: string;
 }

@@ -14,6 +14,7 @@ step 5 goes through the injected ServiceManager so tests never touch systemd.
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -35,6 +36,13 @@ def _utcnow() -> datetime:
 
 class ProvisioningError(RuntimeError):
     pass
+
+
+def _service_error_detail(exc: Exception) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        cmd = " ".join(str(c) for c in exc.cmd) if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd)
+        return f"service start failed: `{cmd}` exited {exc.returncode}"
+    return f"service start failed: {exc}"
 
 
 class Provisioner:
@@ -101,13 +109,22 @@ class Provisioner:
         self._mesh.rewire(roster_now)
 
         # Start services: reload units, (re)start peers so they pick up the new
-        # mesh, then start the new agent.
-        self._services.daemon_reload()
-        for r in roster_now:
-            if r.id == record.id:
-                continue
-            self._services.restart(self._s.unit_name(r.id))
-        self._services.enable_now(self._s.unit_name(record.id))
+        # mesh, then start the new agent. By this point the agent EXISTS — its
+        # files and roster entry are written — so a systemd failure must not
+        # surface as a 500 that looks like nothing happened. Mark the agent as
+        # errored instead; the roster shows it with a red status dot and the
+        # reason, and a later resume retries the start.
+        try:
+            self._services.daemon_reload()
+            for r in roster_now:
+                if r.id == record.id or r.imported:
+                    continue
+                self._services.restart(self._s.unit_name(r.id))
+            self._services.enable_now(self._s.unit_name(record.id))
+        except (subprocess.CalledProcessError, OSError) as exc:
+            record.status = AgentStatus.ERROR
+            record.status_detail = _service_error_detail(exc)
+            self._roster.upsert(record)
 
         return record
 

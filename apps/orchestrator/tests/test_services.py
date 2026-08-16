@@ -33,12 +33,12 @@ class FakeRunner:
 
 def test_detects_user_scope_when_available(monkeypatch):
     monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
-    assert detect_scope(FakeRunner(user_scope_ok=True)) == "user"
+    assert detect_scope(FakeRunner(user_scope_ok=True), euid=1000) == "user"
 
 
 def test_falls_back_to_system_scope_when_user_bus_is_missing(monkeypatch):
     monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
-    assert detect_scope(FakeRunner(user_scope_ok=False)) == "system"
+    assert detect_scope(FakeRunner(user_scope_ok=False), euid=1000) == "system"
 
 
 def test_env_override_wins(monkeypatch):
@@ -54,7 +54,7 @@ def test_missing_systemctl_binary_falls_back_to_system(monkeypatch):
     def explode(*_args, **_kwargs):
         raise OSError("no systemctl here")
 
-    assert detect_scope(explode) == "system"
+    assert detect_scope(explode, euid=1000) == "system"
 
 
 def test_recorded_scope_beats_probing(monkeypatch, tmp_path):
@@ -82,8 +82,22 @@ def test_env_override_beats_even_the_recorded_scope(monkeypatch, tmp_path):
 def test_garbage_in_scope_file_falls_back_to_probing(monkeypatch, tmp_path):
     monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
     (tmp_path / "systemd-scope").write_text("banana\n")
-    assert detect_scope(FakeRunner(user_scope_ok=False), root=tmp_path) == "system"
-    assert detect_scope(FakeRunner(user_scope_ok=True), root=tmp_path) == "user"
+    assert detect_scope(FakeRunner(user_scope_ok=False), root=tmp_path, euid=1000) == "system"
+    assert detect_scope(FakeRunner(user_scope_ok=True), root=tmp_path, euid=1000) == "user"
+
+
+def test_root_always_gets_system_scope_even_when_a_user_bus_exists(monkeypatch, tmp_path):
+    """An interactive root session often has a user bus, but a system service
+    run as root does not — and this code runs inside one. Trusting root's probe
+    once produced two rival installs of the same service."""
+    monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
+    assert detect_scope(FakeRunner(user_scope_ok=True), root=tmp_path, euid=0) == "system"
+
+
+def test_scope_file_still_beats_the_root_rule(monkeypatch, tmp_path):
+    monkeypatch.delenv("RECONS_SYSTEMD_SCOPE", raising=False)
+    (tmp_path / "systemd-scope").write_text("user\n")
+    assert detect_scope(FakeRunner(user_scope_ok=True), root=tmp_path, euid=0) == "user"
 
 
 def test_user_scope_passes_the_user_flag():

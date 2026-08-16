@@ -156,7 +156,13 @@ EOF
   # RECONS_SYSTEMD_SCOPE=user|system overrides the detection.
   scope="${RECONS_SYSTEMD_SCOPE:-}"
   if [ -z "$scope" ]; then
-    if systemctl --user show-environment >/dev/null 2>&1; then
+    if [ "$(id -u)" -eq 0 ]; then
+      # root always gets system scope. An interactive root session often has a
+      # user bus (so the probe below would say "user"), but system services —
+      # including the orchestrator, which drives these units — do not. Probing
+      # here once chose user scope for root and produced two rival installs.
+      scope=system
+    elif systemctl --user show-environment >/dev/null 2>&1; then
       scope=user
     else
       scope=system
