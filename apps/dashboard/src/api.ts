@@ -161,6 +161,12 @@ export const api = {
     });
   },
 
+  history(agentId: string): Promise<{ messages: { role: string; text: string; ts_iso: string }[] }> {
+    return fetch(`${BASE}/agents/${agentId}/history`).then((r) =>
+      json<{ messages: { role: string; text: string; ts_iso: string }[] }>(r),
+    );
+  },
+
   // Streams a chat turn as Server-Sent Events. Yields parsed ChatEvents until
   // the stream closes. Uses fetch streaming (not EventSource) so we can POST.
   async *streamChat(

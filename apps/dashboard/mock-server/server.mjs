@@ -414,6 +414,9 @@ const server = http.createServer(async (req, res) => {
         const { text } = await readBody(req);
         return streamReply(res, agent, String(text || ""));
       }
+      if (action === "history" && req.method === "GET") {
+        return send(res, 200, { messages: [] });
+      }
       if (action === "pause") return (agent.status = "paused"), send(res, 200, agent);
       if (action === "resume") return (agent.status = "running"), send(res, 200, agent);
       if (!action && req.method === "GET") return send(res, 200, agent);
