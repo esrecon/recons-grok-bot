@@ -115,6 +115,12 @@ class Mesh:
 
         by_id = {r.id: r for r in records}
         for rec in records:
+            # Never rewrite an imported agent's files. It arrived with a working
+            # config we don't own, and clobbering it would break the agent
+            # outside this dashboard. Wiring one into the mesh is a deliberate,
+            # manual step (docs/50-agents-a2a.md).
+            if rec.imported:
+                continue
             peers = [by_id[p] for p in sorted(ids) if p != rec.id]
             self._write_config(rec, peers)
             self._write_service_env(rec, peers, tokens)

@@ -15,6 +15,7 @@ step 5 goes through the injected ServiceManager so tests never touch systemd.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -108,6 +109,47 @@ class Provisioner:
             self._services.restart(self._s.unit_name(r.id))
         self._services.enable_now(self._s.unit_name(record.id))
 
+        return record
+
+    def import_agent(
+        self, home: Path, name: str | None = None, role: str = ""
+    ) -> AgentRecord:
+        """Adopt an existing Hermes home into the roster.
+
+        Non-destructive by design: nothing under `home` is created, moved or
+        rewritten. The agent keeps working through the Hermes CLI exactly as
+        before; the dashboard gains the ability to see it and read its history.
+        """
+        home = Path(home)
+        if not home.is_dir():
+            raise ProvisioningError(f"no such directory: {home}")
+
+        roster = self._roster.load()
+        resolved = home.resolve()
+        for existing in roster:
+            if existing.home and Path(existing.home).resolve() == resolved:
+                raise ProvisioningError(f"'{existing.name}' is already imported")
+
+        display = (name or home.name.lstrip(".") or "hermes").strip()
+        agent_id = slugify(display)
+        if any(r.id == agent_id for r in roster):
+            raise ProvisioningError(f"an agent named '{display}' already exists")
+
+        record = AgentRecord(
+            id=agent_id,
+            name=display,
+            role=role or "Imported Hermes agent",
+            a2a_port=self._roster.next_a2a_port(A2A_PORT_BASE),
+            status=AgentStatus.RUNNING,
+            is_lead=(len(roster) == 0),
+            created_at=self._clock().isoformat(),
+            home=str(resolved),
+            imported=True,
+        )
+        self._roster.upsert(record)
+        # Rewire so provisioned agents stay consistent; rewire() skips imported
+        # homes, so this cannot touch the adopted agent's files.
+        self._mesh.rewire(self._roster.load())
         return record
 
     def remove_agent(self, agent_id: str) -> None:

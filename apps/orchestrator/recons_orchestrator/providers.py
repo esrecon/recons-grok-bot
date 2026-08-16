@@ -67,6 +67,20 @@ HERMES_BIN = os.environ.get("RECONS_HERMES_BIN", "hermes")
 OPENAI_LOGIN_CMD = os.environ.get(
     "RECONS_OPENAI_LOGIN_CMD", f"{HERMES_BIN} auth add openai"
 )
+ANTHROPIC_LOGIN_CMD = os.environ.get(
+    "RECONS_ANTHROPIC_LOGIN_CMD", f"{HERMES_BIN} auth add anthropic"
+)
+
+
+def login_commands() -> dict[str, str]:
+    """Providers you can sign into with a subscription, and how.
+
+    Read at call time so the env overrides above can be changed (or patched in
+    tests) without restarting. Both commands are VERIFY: the subcommand differs
+    between Hermes versions, and the app surfaces the command to run by hand if
+    it cannot drive it.
+    """
+    return {"openai": OPENAI_LOGIN_CMD, "anthropic": ANTHROPIC_LOGIN_CMD}
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 # Device codes are conventionally short, upper-case, often hyphenated (ABCD-EFGH).
@@ -129,6 +143,9 @@ class ProviderService:
 
     def _nous_oauth_present(self) -> bool:
         return self._oauth_present("nous", "portal")
+
+    def _anthropic_oauth_present(self) -> bool:
+        return self._oauth_present("anthropic", "claude")
 
     def _wrapper_alive(self) -> bool:
         base = self._secrets.get("CLAUDE_WRAPPER_BASE_URL") or "http://127.0.0.1:8600/v1"
@@ -201,9 +218,16 @@ class ProviderService:
             )
         )
 
-        # --- Anthropic: wrapper (Agent SDK) or a Console API key --------------
-        mode = self._secrets.get("ANTHROPIC_AUTH_MODE") or "wrapper"
-        if mode == "api-key" and self._secrets.is_set("ANTHROPIC_API_KEY"):
+        # --- Anthropic: subscription sign-in, wrapper, or a Console API key ---
+        # Sign-in is checked first: it is the route most people want, and it is
+        # the one that leaves no key in the secrets file.
+        mode = self._secrets.get("ANTHROPIC_AUTH_MODE") or "oauth"
+        if mode != "api-key" and self._anthropic_oauth_present():
+            anth_state, anth_detail = (
+                ProviderState.CONFIGURED,
+                "Signed in with your Claude subscription.",
+            )
+        elif mode == "api-key" and self._secrets.is_set("ANTHROPIC_API_KEY"):
             anth_state, anth_detail = (
                 ProviderState.CONFIGURED,
                 "Using a Claude Console API key (pay-as-you-go).",
@@ -213,22 +237,17 @@ class ProviderService:
                 ProviderState.CONFIGURED,
                 "Agent SDK wrapper is running against your Claude login.",
             )
-        elif mode != "api-key":
-            anth_state, anth_detail = (
-                ProviderState.NOT_CONFIGURED,
-                "Optional. Start the wrapper service, or switch to a Console API key.",
-            )
         else:
             anth_state, anth_detail = (
                 ProviderState.NOT_CONFIGURED,
-                "Optional. Paste a Claude Console API key.",
+                "Sign in with the Claude subscription you already pay for.",
             )
         out.append(
             ProviderStatus(
                 id="anthropic",
                 label="Claude",
                 tier="lead",
-                method="service",
+                method="oauth",
                 state=anth_state,
                 detail=anth_detail,
                 docs="docs/40-providers-and-tos.md",
@@ -271,10 +290,11 @@ class ProviderService:
 
     # -- subscription sign-in (device code) ------------------------------------
     def start_login(self, provider: str, runner=None) -> LoginSession:
-        if provider != "openai":
+        commands = login_commands()
+        if provider not in commands:
             raise ValueError(f"{provider} does not use subscription sign-in")
         session = LoginSession(
-            id=uuid.uuid4().hex[:12], provider=provider, command=OPENAI_LOGIN_CMD
+            id=uuid.uuid4().hex[:12], provider=provider, command=commands[provider]
         )
         with self._lock:
             self._logins[session.id] = session
