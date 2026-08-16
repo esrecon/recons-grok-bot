@@ -15,7 +15,13 @@ const threadCache = new Map<string, ChatMessage[]>();
 
 // The conversation column: header pill (avatar + name + live-view button), the
 // message list, and the composer. Streams assistant replies token-by-token.
-export function ChatView({ agent }: { agent: Agent }) {
+export function ChatView({
+  agent,
+  onChanged,
+}: {
+  agent: Agent;
+  onChanged?: () => void;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>(
     () => threadCache.get(agent.id) ?? [],
   );
@@ -142,14 +148,42 @@ export function ChatView({ agent }: { agent: Agent }) {
     void id;
   }
 
+  async function promoteToLead() {
+    const ok = window.confirm(
+      `Make ${agent.name} head of staff? The current lead steps down, and every agent's managed "Your team" section is updated.`,
+    );
+    if (!ok) return;
+    try {
+      await api.makeLead(agent.id);
+      onChanged?.();
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : "Could not change the lead.");
+    }
+  }
+
   return (
     <section className="flex h-full flex-1 flex-col bg-bg">
       <header className="flex items-center justify-between border-b border-hairline px-4 py-2.5">
-        <div className="flex items-center gap-2 rounded-full bg-surface px-2.5 py-1">
-          <BotAvatar id={agent.id} color={agent.avatar_color} size={26} title={agent.name} />
-          <span className="text-[15px] font-semibold text-text-primary">
-            {agent.name}
-          </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex items-center gap-2 rounded-full bg-surface px-2.5 py-1">
+            <BotAvatar id={agent.id} color={agent.avatar_color} size={26} title={agent.name} />
+            <span className="text-[15px] font-semibold text-text-primary">
+              {agent.name}
+            </span>
+          </div>
+          {agent.is_lead ? (
+            <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium uppercase text-text-secondary">
+              head of staff
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={promoteToLead}
+              className="shrink-0 text-[12px] text-text-secondary hover:text-text-primary"
+            >
+              Make head of staff
+            </button>
+          )}
         </div>
         <button
           type="button"

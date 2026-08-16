@@ -25,9 +25,9 @@ from .chat import ChatBackend
 from .config import Settings
 from .discovery import discover
 from .ledger import Ledger
-from .models import AgentRecord, AgentSpec, AgentStatus
+from .models import AgentRecord, AgentSpec, AgentStatus, PromoteReport
 from .providers import ProviderService
-from .provisioning import Provisioner, ProvisioningError
+from .provisioning import ImportedAgentError, Provisioner, ProvisioningError
 from .routines import RoutineStore
 from .secrets_store import SecretsError, SecretsStore
 from .skills import SkillLibrary
@@ -83,6 +83,19 @@ class ImportInput(BaseModel):
     role: str = ""
 
 
+class PromoteInput(BaseModel):
+    telegram_enabled: bool = False
+    telegram_allowed_users: str = ""
+    telegram_token: str | None = None
+    make_lead: bool = False
+
+
+class TelegramInput(BaseModel):
+    enabled: bool
+    allowed_users: str = ""
+    token: str | None = None
+
+
 class MessageInput(BaseModel):
     text: str
 
@@ -110,14 +123,18 @@ async def _lifespan(app: FastAPI):
     # existing agents kept stale configs until something unrelated touched the
     # roster. Restarting the orchestrator now deploys template fixes. Imported
     # agents are skipped by rewire() as always; edge tokens are stable, so this
-    # is idempotent.
+    # is idempotent. The team-section sync rides along for the same reason:
+    # contract-text improvements deploy on restart instead of waiting for a
+    # roster change (imported homes still only if they carry the fence).
     try:
+        from . import team
         from .mesh import Mesh
         from .roster import Roster
 
         records = Roster(settings.roster_path).load()
         if records:
             Mesh(settings).rewire(records)
+            team.sync(settings, records)
     except Exception:  # noqa: BLE001 - boot must not die on a bad roster file
         logging.getLogger("recons.app").exception("startup rewire failed")
     yield
@@ -418,6 +435,87 @@ def create_app() -> FastAPI:
     ) -> AgentRecord:
         return _set_status(prov, agent_id, AgentStatus.RUNNING)
 
+    @app.post("/api/agents/{agent_id}/lead", response_model=AgentRecord)
+    def make_lead(
+        agent_id: str, prov: Provisioner = Depends(get_provisioner)
+    ) -> AgentRecord:
+        """Make this agent the head of staff. Exactly one lead at a time."""
+        try:
+            return prov.set_lead(agent_id)
+        except ProvisioningError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/agents/{agent_id}/promote", response_model=PromoteReport)
+    def promote_agent(
+        agent_id: str, body: PromoteInput, prov: Provisioner = Depends(get_provisioner)
+    ) -> PromoteReport:
+        """Adopt an imported agent as managed. Files and roster only — the
+        record comes out PAUSED and nothing is started; the cutover script
+        owns the moment a gateway begins polling (docs/35)."""
+        try:
+            return prov.promote_agent(
+                agent_id,
+                telegram_enabled=body.telegram_enabled,
+                telegram_allowed_users=body.telegram_allowed_users,
+                telegram_token=body.telegram_token,
+                make_lead=body.make_lead,
+            )
+        except ProvisioningError as exc:
+            status = 404 if "no such agent" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/agents/{agent_id}/demote", response_model=AgentRecord)
+    def demote_agent(
+        agent_id: str, prov: Provisioner = Depends(get_provisioner)
+    ) -> AgentRecord:
+        """Cutover rollback: back to imported, gateway disabled, Telegram off."""
+        try:
+            return prov.demote_agent(agent_id)
+        except ProvisioningError as exc:
+            status = 404 if "no such agent" in str(exc) else 409
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    @app.get("/api/agents/{agent_id}/telegram")
+    def get_telegram(
+        agent_id: str,
+        prov: Provisioner = Depends(get_provisioner),
+        settings: Settings = Depends(get_settings),
+    ) -> dict:
+        """Telegram status. Write-only secret contract: reports whether a
+        token is stored, never the token itself."""
+        from .telegram import load_tokens
+
+        record = prov.get_agent(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        return {
+            "enabled": record.telegram_enabled,
+            "allowed_users": record.telegram_allowed_users,
+            "token_set": bool(load_tokens(settings).get(agent_id)),
+            "imported": record.imported,
+        }
+
+    @app.put("/api/agents/{agent_id}/telegram", response_model=AgentRecord)
+    def set_telegram(
+        agent_id: str, body: TelegramInput, prov: Provisioner = Depends(get_provisioner)
+    ) -> AgentRecord:
+        try:
+            return prov.set_telegram(
+                agent_id,
+                enabled=body.enabled,
+                allowed_users=body.allowed_users,
+                token=body.token,
+            )
+        except ImportedAgentError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ProvisioningError as exc:
+            status = 404 if "no such agent" in str(exc) else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.delete("/api/agents/{agent_id}", status_code=204)
     def delete_agent(
         agent_id: str, prov: Provisioner = Depends(get_provisioner)
@@ -471,6 +569,8 @@ def create_app() -> FastAPI:
 def _set_status(prov: Provisioner, agent_id: str, status: AgentStatus) -> AgentRecord:
     try:
         return prov.set_status(agent_id, status)
+    except ImportedAgentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProvisioningError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

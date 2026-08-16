@@ -219,6 +219,48 @@ def test_history_404_for_unknown_agent(client):
 
 
 # --- shared credentials -------------------------------------------------------
+def test_existing_real_auth_json_is_never_replaced(monkeypatch, tmp_path):
+    """A migrated agent arrives with its own credentials file — the shared-auth
+    self-heal must leave a regular auth.json exactly as it found it."""
+    from recons_orchestrator.chat import ensure_shared_auth
+
+    default_home = tmp_path / "default-hermes"
+    default_home.mkdir()
+    (default_home / "auth.json").write_text('{"shared": true}')
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    agent_home = tmp_path / "agent-home"
+    agent_home.mkdir()
+    (agent_home / "auth.json").write_text('{"mine": true}')
+
+    ensure_shared_auth(agent_home)
+
+    target = agent_home / "auth.json"
+    assert not target.is_symlink()
+    assert target.read_text() == '{"mine": true}'
+
+
+def test_dangling_auth_symlink_is_healed(monkeypatch, tmp_path):
+    """A link to a moved/deleted default store used to wedge the agent
+    unauthenticated forever (FileExistsError swallowed on every turn)."""
+    from recons_orchestrator.chat import ensure_shared_auth
+
+    default_home = tmp_path / "default-hermes"
+    default_home.mkdir()
+    (default_home / "auth.json").write_text('{"shared": true}')
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    agent_home = tmp_path / "agent-home"
+    agent_home.mkdir()
+    (agent_home / "auth.json").symlink_to(tmp_path / "gone.json")  # dangling
+
+    ensure_shared_auth(agent_home)
+
+    target = agent_home / "auth.json"
+    assert target.is_symlink()
+    assert target.resolve() == (default_home / "auth.json").resolve()
+
+
 def test_new_agent_links_the_shared_auth_store(settings, monkeypatch, tmp_path):
     from recons_orchestrator.models import AgentSpec
 

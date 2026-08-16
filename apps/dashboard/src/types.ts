@@ -14,6 +14,9 @@ export interface Agent {
   status_detail?: string;
   is_lead: boolean;
   created_at: string;
+  // Adopted from an existing Hermes install: owns its home and, until
+  // promoted, runs its gateway outside this platform.
+  imported?: boolean;
 }
 
 export interface NewAgentInput {
@@ -61,6 +64,15 @@ export interface AuditFilters {
   source?: string;
   a2a_only?: boolean;
   q?: string;
+}
+
+// Per-agent Telegram gateway state. The bot token is write-only: the API
+// reports whether one is stored, never the value.
+export interface TelegramStatus {
+  enabled: boolean;
+  allowed_users: string;
+  token_set: boolean;
+  imported: boolean;
 }
 
 export type ProviderState = "configured" | "not_configured" | "error";

@@ -50,6 +50,23 @@ class Roster:
     def remove(self, agent_id: str) -> None:
         self.save([r for r in self.load() if r.id != agent_id])
 
+    def set_lead(self, agent_id: str) -> list[AgentRecord]:
+        """Make agent_id the sole lead.
+
+        One load, one atomic save: there is no intermediate persisted state, so
+        the roster can never be left with zero or two leads mid-reassignment.
+        """
+        records = self.load()
+        if not any(r.id == agent_id for r in records):
+            raise KeyError(agent_id)
+        for r in records:
+            r.is_lead = r.id == agent_id
+        self.save(records)
+        return records
+
+    def lead(self) -> AgentRecord | None:
+        return next((r for r in self.load() if r.is_lead), None)
+
     def next_a2a_port(self, base: int) -> int:
         """Lowest free port at or above `base`, filling gaps left by deletions."""
         used = {r.a2a_port for r in self.load()}

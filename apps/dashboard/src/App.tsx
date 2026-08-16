@@ -130,7 +130,7 @@ export function App() {
 
         {view === "chats" &&
           (selected ? (
-            <ChatView agent={selected} />
+            <ChatView agent={selected} onChanged={refresh} />
           ) : (
             <div className="grid h-full place-items-center bg-bg p-6 text-center">
               <div>

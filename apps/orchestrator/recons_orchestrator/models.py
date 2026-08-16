@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Model tiers map to a provider/model pair in config.py. The dashboard offers
 # these as friendly labels; the provisioner turns them into Hermes provider
@@ -24,7 +24,14 @@ class AgentStatus(str, Enum):
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_RESERVED = frozenset({"shared", "roster", "all", "new", "api", "hermes"})
+# Reserved ids: "shared" and "roster" collide with the $RECONS_ROOT layout
+# (shared/, roster.json) and "shared" doubles as a skill-source label; "api" is
+# special-cased by the SPA catch-all route; "all" and "new" are held back for
+# future collective endpoints. "hermes" is deliberately NOT reserved: agents
+# live under agents/<id> (never ~/.hermes), and the default Hermes profile is
+# discovered under exactly that name — reserving it made the most common
+# import (your own ~/.hermes agent) impossible.
+_RESERVED = frozenset({"shared", "roster", "all", "new", "api"})
 
 
 def slugify(name: str) -> str:
@@ -85,3 +92,36 @@ class AgentRecord(BaseModel):
     # Human-readable reason when status is ERROR (e.g. the systemd failure that
     # kept the agent's gateway from starting). Empty otherwise.
     status_detail: str = ""
+    # Telegram gateway, rendered into config.yaml + service.env by the mesh.
+    # allowed_users is a comma-separated list of NUMERIC Telegram user ids; the
+    # validator below refuses enabled-without-allowlist, so an open gateway is
+    # unrepresentable in the roster (docs/60: per-platform allowlists).
+    telegram_enabled: bool = False
+    telegram_allowed_users: str = ""
+    # Captured at promotion so an adopted agent keeps the provider/model it
+    # arrived with instead of falling back to the tier constants (config.py).
+    model_provider: str | None = None
+    model_name: str | None = None
+
+    @model_validator(mode="after")
+    def _check_telegram(self) -> "AgentRecord":
+        if self.telegram_enabled:
+            users = self.telegram_allowed_users.replace(" ", "")
+            if not re.fullmatch(r"\d+(,\d+)*", users):
+                raise ValueError(
+                    "telegram_enabled requires telegram_allowed_users: a "
+                    "comma-separated list of numeric Telegram user ids"
+                )
+            self.telegram_allowed_users = users
+        return self
+
+
+class PromoteReport(BaseModel):
+    """What promote_agent actually did — honest accounting for the operator,
+    including the top-level config keys the template does not carry over."""
+
+    record: AgentRecord
+    model_captured: bool
+    telegram_token_source: str  # "provided" | "extracted" | "none"
+    dropped_config_keys: list[str]
+    backup_path: str

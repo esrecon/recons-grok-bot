@@ -10,6 +10,7 @@ import type {
   Routine,
   SetupStatus,
   Skill,
+  TelegramStatus,
 } from "./types";
 
 // Single-origin client for the orchestrator (proxied to the mock server in dev).
@@ -40,6 +41,29 @@ export const api = {
     return fetch(`${BASE}/agents/${id}/${action}`, { method: "POST" }).then((r) =>
       json<Agent>(r),
     );
+  },
+
+  makeLead(id: string): Promise<Agent> {
+    return fetch(`${BASE}/agents/${id}/lead`, { method: "POST" }).then((r) =>
+      json<Agent>(r),
+    );
+  },
+
+  getTelegram(id: string): Promise<TelegramStatus> {
+    return fetch(`${BASE}/agents/${id}/telegram`).then((r) =>
+      json<TelegramStatus>(r),
+    );
+  },
+
+  setTelegram(
+    id: string,
+    input: { enabled: boolean; allowed_users?: string; token?: string },
+  ): Promise<Agent> {
+    return fetch(`${BASE}/agents/${id}/telegram`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }).then((r) => json<Agent>(r));
   },
 
   deleteAgent(id: string): Promise<void> {

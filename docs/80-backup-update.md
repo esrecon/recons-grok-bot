@@ -12,9 +12,15 @@
 | `agents/<id>/service.env` | HERMES_HOME + A2A tokens |
 | `shared/skills/` | Every skill you've taught and approved |
 | `shared/secrets.env`, `shared/a2a-tokens.json` | Keys and edge tokens |
+| `agents/<id>/.migrate-hermes.json`, `agents/<id>/sync-backups/` | Migration stamp + pre-refresh copies for an agent migrated from another machine (docs/70) |
 
 Not worth backing up: `dashboard/` and `app/` (rebuild from git), and Docker
 images.
+
+One honest caveat: the archive tars each agent's `state.db` in place, so a
+busy agent's copy can be mid-write. For a guaranteed-consistent copy, pause
+the agent first — `migrate-hermes.sh` snapshots its *source* via
+`sqlite3 ".backup"` for exactly this reason.
 
 ## Back up
 

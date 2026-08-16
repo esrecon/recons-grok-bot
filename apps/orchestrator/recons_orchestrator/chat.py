@@ -52,7 +52,18 @@ def ensure_shared_auth(agent_home: Path) -> None:
     source = default_home / "auth.json"  # VERIFY filename against Hermes
     target = agent_home / "auth.json"
     try:
-        if source.is_file() and not target.exists() and agent_home.is_dir():
+        if target.is_symlink() and not target.exists():
+            # Dangling link (the default store moved or was deleted). Without
+            # this, exists() stays False, symlink_to raises FileExistsError,
+            # the except below swallows it — and the agent is silently
+            # unauthenticated on every turn, forever.
+            target.unlink()
+        if (
+            source.is_file()
+            and not target.exists()
+            and not target.is_symlink()  # never replace a link OR a real file
+            and agent_home.is_dir()
+        ):
             target.symlink_to(source)
     except OSError:
         pass  # degrade to an unauthenticated agent, never a crash

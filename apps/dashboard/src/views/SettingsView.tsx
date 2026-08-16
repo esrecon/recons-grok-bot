@@ -1,6 +1,7 @@
 import type { Agent, Provider } from "../types";
 import { ProviderCard } from "../components/ProviderCard";
 import { ImportAgents } from "../components/ImportAgents";
+import { TelegramCard } from "../components/TelegramCard";
 
 // Providers and their connection state, manageable at any time. Keys are
 // write-only: you can replace or disconnect, never read one back.
@@ -36,6 +37,25 @@ export function SettingsView({
           Existing Hermes agents
         </h2>
         <ImportAgents usedColors={usedColors} onImported={onChanged} />
+
+        {agents.length > 0 && (
+          <>
+            <h2 className="mb-2 mt-7 text-sm font-semibold text-text-primary">
+              Telegram
+            </h2>
+            <p className="mb-2 text-[13px] text-text-secondary">
+              Text an agent from your phone without the tailnet. Usually just
+              the head of staff — and one bot token supports only one live
+              connection, so a bot moved from another machine must be stopped
+              there first.
+            </p>
+            <div className="space-y-3">
+              {agents.map((a) => (
+                <TelegramCard key={a.id} agent={a} onChanged={onChanged} />
+              ))}
+            </div>
+          </>
+        )}
 
         <h2 className="mb-2 mt-7 text-sm font-semibold text-text-primary">
           Where things live
