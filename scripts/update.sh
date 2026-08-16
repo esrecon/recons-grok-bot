@@ -26,6 +26,13 @@ git -C "$REPO_DIR" pull --ff-only || echo "   (skipped: not a fast-forward)"
 echo "== 4/6 Rebuild dashboard =="
 if [ -f "$REPO_DIR/apps/dashboard/package.json" ]; then
   (cd "$REPO_DIR/apps/dashboard" && npm ci --no-audit --no-fund && npm run build)
+  # Deploy the fresh build where the orchestrator actually serves it from
+  # (RECONS_DASHBOARD_DIST in the unit; quickstart installs the same path).
+  # Rebuilding without this copy left the served app permanently stale.
+  DASH_DIST="${RECONS_DASHBOARD_DIST:-/opt/recons/dashboard}"
+  mkdir -p "$DASH_DIST"
+  cp -r "$REPO_DIR/apps/dashboard/dist/." "$DASH_DIST/"
+  echo "   deployed to $DASH_DIST"
 fi
 
 echo "== 5/6 Restart services =="
