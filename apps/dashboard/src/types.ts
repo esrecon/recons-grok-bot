@@ -14,6 +14,9 @@ export interface Agent {
   status_detail?: string;
   is_lead: boolean;
   created_at: string;
+  // Adopted from an existing Hermes install: owns its home and, until
+  // promoted, runs its gateway outside this platform.
+  imported?: boolean;
 }
 
 export interface NewAgentInput {

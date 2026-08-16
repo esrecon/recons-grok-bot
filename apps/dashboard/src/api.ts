@@ -42,6 +42,12 @@ export const api = {
     );
   },
 
+  makeLead(id: string): Promise<Agent> {
+    return fetch(`${BASE}/agents/${id}/lead`, { method: "POST" }).then((r) =>
+      json<Agent>(r),
+    );
+  },
+
   deleteAgent(id: string): Promise<void> {
     return fetch(`${BASE}/agents/${id}`, { method: "DELETE" }).then((r) => {
       if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);

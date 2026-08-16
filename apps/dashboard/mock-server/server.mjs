@@ -417,6 +417,15 @@ const server = http.createServer(async (req, res) => {
       if (action === "history" && req.method === "GET") {
         return send(res, 200, { messages: [] });
       }
+      if (action === "lead" && req.method === "POST") {
+        for (const a of agents.values()) a.is_lead = a.id === id;
+        return send(res, 200, agent);
+      }
+      if ((action === "pause" || action === "resume") && agent.imported) {
+        return send(res, 409, {
+          detail: `'${agent.name}' is imported — its gateway runs outside this platform until promotion`,
+        });
+      }
       if (action === "pause") return (agent.status = "paused"), send(res, 200, agent);
       if (action === "resume") return (agent.status = "running"), send(res, 200, agent);
       if (!action && req.method === "GET") return send(res, 200, agent);

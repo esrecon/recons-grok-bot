@@ -87,6 +87,20 @@ def test_import_the_default_hermes_profile_by_name(client, tmp_path):
     assert hist["messages"], "expected turns from the imported state.db"
 
 
+def test_make_lead_endpoint_moves_the_badge(client):
+    client.post("/api/agents", json={"name": "Recon", "role": "x"})
+    client.post("/api/agents", json={"name": "Scout", "role": "y"})
+
+    resp = client.post("/api/agents/scout/lead")
+    assert resp.status_code == 200
+    assert resp.json()["is_lead"] is True
+
+    listing = client.get("/api/agents").json()
+    assert [a["id"] for a in listing if a["is_lead"]] == ["scout"]
+
+    assert client.post("/api/agents/nope/lead").status_code == 404
+
+
 def test_pause_and_resume_of_imported_agents_conflict(client, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

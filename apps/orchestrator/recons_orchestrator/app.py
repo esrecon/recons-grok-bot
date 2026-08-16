@@ -110,14 +110,18 @@ async def _lifespan(app: FastAPI):
     # existing agents kept stale configs until something unrelated touched the
     # roster. Restarting the orchestrator now deploys template fixes. Imported
     # agents are skipped by rewire() as always; edge tokens are stable, so this
-    # is idempotent.
+    # is idempotent. The team-section sync rides along for the same reason:
+    # contract-text improvements deploy on restart instead of waiting for a
+    # roster change (imported homes still only if they carry the fence).
     try:
+        from . import team
         from .mesh import Mesh
         from .roster import Roster
 
         records = Roster(settings.roster_path).load()
         if records:
             Mesh(settings).rewire(records)
+            team.sync(settings, records)
     except Exception:  # noqa: BLE001 - boot must not die on a bad roster file
         logging.getLogger("recons.app").exception("startup rewire failed")
     yield
@@ -417,6 +421,16 @@ def create_app() -> FastAPI:
         agent_id: str, prov: Provisioner = Depends(get_provisioner)
     ) -> AgentRecord:
         return _set_status(prov, agent_id, AgentStatus.RUNNING)
+
+    @app.post("/api/agents/{agent_id}/lead", response_model=AgentRecord)
+    def make_lead(
+        agent_id: str, prov: Provisioner = Depends(get_provisioner)
+    ) -> AgentRecord:
+        """Make this agent the head of staff. Exactly one lead at a time."""
+        try:
+            return prov.set_lead(agent_id)
+        except ProvisioningError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.delete("/api/agents/{agent_id}", status_code=204)
     def delete_agent(

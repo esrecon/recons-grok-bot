@@ -22,6 +22,7 @@ from typing import Callable
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 
+from . import team
 from .config import A2A_PORT_BASE, Settings
 from .mesh import Mesh, TokenFactory, _default_token
 from .models import AgentRecord, AgentSpec, AgentStatus, slugify
@@ -126,6 +127,10 @@ class Provisioner:
         # Rewire the whole mesh (this agent + every existing peer).
         roster_now = self._roster.load()
         self._mesh.rewire(roster_now)
+        # Refresh everyone's managed "Your team" SOUL section so existing
+        # agents learn about the new teammate (imported homes are only touched
+        # if they opted in — see team.py's consent model).
+        team.sync(self._s, roster_now)
 
         # Start services: reload units, (re)start peers so they pick up the new
         # mesh, then start the new agent. By this point the agent EXISTS — its
@@ -184,8 +189,12 @@ class Provisioner:
         )
         self._roster.upsert(record)
         # Rewire so provisioned agents stay consistent; rewire() skips imported
-        # homes, so this cannot touch the adopted agent's files.
-        self._mesh.rewire(self._roster.load())
+        # homes, so this cannot touch the adopted agent's files. Likewise the
+        # team sync: managed teammates learn about the newcomer, while the
+        # imported home itself is left alone (no fence until lead-ification).
+        roster_now = self._roster.load()
+        self._mesh.rewire(roster_now)
+        team.sync(self._s, roster_now)
         return record
 
     def remove_agent(self, agent_id: str) -> None:
@@ -199,6 +208,15 @@ class Provisioner:
         # Rewire remaining agents so they drop the removed peer.
         remaining = self._roster.load()
         self._mesh.rewire(remaining)
+        # Deleting the lead must not leave the team headless forever: promote
+        # the oldest MANAGED agent (roster order = creation order). Imported
+        # agents are never auto-promoted — becoming lead writes into their
+        # SOUL, which stays an explicit operator action.
+        if record.is_lead and not any(r.is_lead for r in remaining):
+            fallback = next((r for r in remaining if not r.imported), None)
+            if fallback:
+                remaining = self._roster.set_lead(fallback.id)
+        team.sync(self._s, remaining)
         for r in remaining:
             if r.imported:
                 # Same guard as create_agent: "restarting" an imported agent's
@@ -212,6 +230,47 @@ class Provisioner:
                 log.warning("restart of %s after removal failed", r.id, exc_info=True)
         # Leave the agent's HERMES_HOME on disk (transcripts are business data);
         # the runbook covers archival deletion. We only remove it from the mesh.
+
+    def set_lead(self, agent_id: str) -> AgentRecord:
+        """Make this agent the head of staff — the sole lead.
+
+        Roster metadata plus personas: every agent's managed team section is
+        refreshed so the new lead carries the delegation contract and the
+        teammates know who to report to. Seeding the fence into an IMPORTED
+        home happens only here — the one deliberate exception to the
+        never-touch-imported-files promise, triggered by an explicit operator
+        action.
+        """
+        record = self._roster.get(agent_id)
+        if record is None:
+            raise ProvisioningError(f"no such agent: {agent_id}")
+        if record.is_lead:
+            # Already the lead — but an agent imported onto an empty roster
+            # became lead by default WITHOUT consent to write its SOUL, so it
+            # may still lack the contract. Calling this endpoint is that
+            # consent: make sure the fence exists, change nothing else.
+            records = self._roster.load()
+            team.seed(self._s, record, records)
+            team.sync(self._s, records)
+            return record
+
+        records = self._roster.set_lead(agent_id)
+        new_lead = next(r for r in records if r.id == agent_id)
+        team.seed(self._s, new_lead, records)
+        team.sync(self._s, records)
+
+        # Long-running gateways read SOUL.md at start (docs/50), so restart
+        # the managed ones to make the new personas take effect. Per-unit and
+        # forgiving: one failed restart must not abort the rest or undo the
+        # roster change.
+        for r in records:
+            if r.imported:
+                continue
+            try:
+                self._services.restart(self._s.unit_name(r.id))
+            except (subprocess.CalledProcessError, OSError):
+                log.warning("restart of %s after lead change failed", r.id, exc_info=True)
+        return new_lead
 
     def set_status(self, agent_id: str, status: AgentStatus) -> AgentRecord:
         record = self._roster.get(agent_id)
