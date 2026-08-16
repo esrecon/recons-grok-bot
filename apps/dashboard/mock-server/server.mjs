@@ -72,6 +72,9 @@ const providerState = {
 };
 const logins = new Map();
 
+// Per-agent Telegram bot tokens (write-only, like provider keys).
+const tgTokens = new Map();
+
 // Hermes agents "already on the machine", for the import flow.
 const discovered = [
   { id: "hermes", name: "Hermes", home: "/root/.hermes", role: "Existing default agent", model: "gpt-5.6-terra" },
@@ -419,6 +422,60 @@ const server = http.createServer(async (req, res) => {
       }
       if (action === "lead" && req.method === "POST") {
         for (const a of agents.values()) a.is_lead = a.id === id;
+        return send(res, 200, agent);
+      }
+      if (action === "telegram" && req.method === "GET") {
+        return send(res, 200, {
+          enabled: !!agent.telegram_enabled,
+          allowed_users: agent.telegram_allowed_users || "",
+          token_set: tgTokens.has(id),
+          imported: !!agent.imported,
+        });
+      }
+      if (action === "telegram" && req.method === "PUT") {
+        if (agent.imported) {
+          return send(res, 409, {
+            detail: `'${agent.name}' is imported — move its bot here with scripts/telegram-cutover.sh`,
+          });
+        }
+        const body = await readBody(req);
+        if (body.token) tgTokens.set(id, body.token);
+        if (body.enabled && !tgTokens.has(id)) {
+          return send(res, 400, { detail: "no bot token stored — include one" });
+        }
+        const users = String(body.allowed_users || "").replace(/\s/g, "");
+        if (body.enabled && !/^\d+(,\d+)*$/.test(users)) {
+          return send(res, 400, { detail: "allowed_users must be numeric Telegram user ids" });
+        }
+        agent.telegram_enabled = !!body.enabled;
+        agent.telegram_allowed_users = body.enabled ? users : "";
+        return send(res, 200, agent);
+      }
+      if (action === "promote" && req.method === "POST") {
+        if (!agent.imported) return send(res, 409, { detail: "not an imported agent" });
+        const body = await readBody(req);
+        agent.imported = false;
+        agent.status = "paused"; // promote starts nothing
+        if (body.telegram_enabled) {
+          agent.telegram_enabled = true;
+          agent.telegram_allowed_users = String(body.telegram_allowed_users || "");
+          if (body.telegram_token) tgTokens.set(id, body.telegram_token);
+        }
+        if (body.make_lead) for (const a of agents.values()) a.is_lead = a.id === id;
+        return send(res, 200, {
+          record: agent,
+          model_captured: true,
+          telegram_token_source: body.telegram_token ? "provided" : "extracted",
+          dropped_config_keys: [],
+          backup_path: `/opt/recons/agents/${id}/home/config.yaml.pre-promote.bak`,
+        });
+      }
+      if (action === "demote" && req.method === "POST") {
+        if (agent.imported) return send(res, 409, { detail: "already imported" });
+        agent.imported = true;
+        agent.telegram_enabled = false;
+        agent.telegram_allowed_users = "";
+        agent.status = "running";
         return send(res, 200, agent);
       }
       if ((action === "pause" || action === "resume") && agent.imported) {

@@ -46,6 +46,14 @@ gateway:
       extra:
         port: {{ record.a2a_port }}
         host: 127.0.0.1               # VERIFY host key; remote reach via tailscale
+{% if record.telegram_enabled %}    telegram:
+      enabled: true                   # VERIFY platform id + key names (docs/30)
+      extra:
+        # Placeholder only — the real token is re-emitted into service.env
+        # (TELEGRAM_BOT_TOKEN) by the mesh; the allowlist is enforced via the
+        # TELEGRAM_ALLOWED_USERS env there. VERIFY that Hermes expands ${ENV}.
+        bot_token: "${TELEGRAM_BOT_TOKEN}"
+{% endif %}
 
 # Outbound peers this agent may call (the mesh). Tokens are injected from
 # service.env so no secret is written into this file.

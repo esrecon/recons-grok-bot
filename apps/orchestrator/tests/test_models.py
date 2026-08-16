@@ -43,3 +43,41 @@ def test_spec_rejects_bad_color():
 def test_spec_rejects_symbol_only_name():
     with pytest.raises(ValueError):
         AgentSpec(name="###", role="x")
+
+
+def test_pre_telegram_roster_records_load_with_defaults():
+    """roster.json written before the telegram/model fields existed must keep
+    loading — rollback safety for the orchestrator itself."""
+    from recons_orchestrator.models import AgentRecord
+
+    rec = AgentRecord.model_validate(
+        {
+            "id": "recon",
+            "name": "Recon",
+            "role": "Lead",
+            "a2a_port": 9900,
+            "created_at": "2026-08-15T12:00:00+00:00",
+        }
+    )
+    assert rec.telegram_enabled is False
+    assert rec.telegram_allowed_users == ""
+    assert rec.model_provider is None and rec.model_name is None
+
+
+def test_record_refuses_telegram_without_numeric_allowlist():
+    from recons_orchestrator.models import AgentRecord
+
+    base = {
+        "id": "comms",
+        "name": "Comms",
+        "role": "x",
+        "a2a_port": 9900,
+        "created_at": "2026-08-15T12:00:00+00:00",
+        "telegram_enabled": True,
+    }
+    with pytest.raises(ValueError):
+        AgentRecord.model_validate(base)
+    with pytest.raises(ValueError):
+        AgentRecord.model_validate({**base, "telegram_allowed_users": "me@x"})
+    ok = AgentRecord.model_validate({**base, "telegram_allowed_users": "42, 43"})
+    assert ok.telegram_allowed_users == "42,43"

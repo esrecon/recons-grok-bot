@@ -95,3 +95,49 @@ def test_removed_agent_tokens_pruned(provisioner, settings):
     provisioner.remove_agent("scout")
     tokens = json.loads((settings.shared_dir / "a2a-tokens.json").read_text())
     assert all("scout" not in edge for edge in tokens)
+
+
+# --- telegram rendering -------------------------------------------------------
+def test_telegram_disabled_renders_no_block(provisioner, settings):
+    _make(provisioner, "Recon")
+    cfg = yaml.safe_load((settings.home_dir("recon") / "config.yaml").read_text())
+    assert "telegram" not in cfg["gateway"]["platforms"]
+    assert "TELEGRAM_BOT_TOKEN" not in settings.service_env("recon").read_text()
+
+
+def test_telegram_enabled_placeholder_in_config_secret_only_in_env(
+    provisioner, settings
+):
+    from recons_orchestrator import telegram as tg
+
+    _make(provisioner, "Recon")
+    _make(provisioner, "Comms")
+    tg.store_token(settings, "comms", "12345678:real-secret")
+    provisioner.set_telegram("comms", enabled=True, allowed_users="42")
+
+    raw = (settings.home_dir("comms") / "config.yaml").read_text()
+    assert '"${TELEGRAM_BOT_TOKEN}"' in raw
+    assert "12345678:real-secret" not in raw
+    cfg = yaml.safe_load(raw)  # the block keeps the file valid YAML
+    assert cfg["gateway"]["platforms"]["telegram"]["enabled"] is True
+
+    env = _read_env(settings.service_env("comms"))
+    assert env["TELEGRAM_BOT_TOKEN"] == "12345678:real-secret"
+    assert env["TELEGRAM_ALLOWED_USERS"] == "42"
+
+
+def test_telegram_enabled_without_stored_token_fails_loud(
+    settings, token_factory
+):
+    import pytest
+
+    from recons_orchestrator.mesh import Mesh, MeshError
+    from recons_orchestrator.models import AgentRecord
+
+    rec = AgentRecord(
+        id="comms", name="Comms", role="x", a2a_port=9900,
+        created_at="2026-08-15T12:00:00+00:00",
+        telegram_enabled=True, telegram_allowed_users="42",
+    )
+    with pytest.raises(MeshError, match="no bot token"):
+        Mesh(settings, token_factory=token_factory).rewire([rec])

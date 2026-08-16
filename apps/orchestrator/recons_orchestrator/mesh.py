@@ -22,10 +22,21 @@ from typing import Callable
 import yaml
 from jinja2 import Environment, PackageLoader, select_autoescape
 
-from .config import Settings, TIERS, inherited_model
+from .config import Settings, TierConfig, TIERS, inherited_model
 from .models import AgentRecord, ModelTier
+from .telegram import load_tokens as load_telegram_tokens
 
 TokenFactory = Callable[[], str]
+
+
+class MeshError(RuntimeError):
+    """The roster demands something the shared stores cannot provide.
+
+    Raised fail-loud from rewire (e.g. telegram enabled with no stored bot
+    token). The API paths store the token before flipping the flag, so this
+    only fires on hand-mangled state — where the boot rewire's blanket
+    exception handler will log it and leave that agent's files stale.
+    """
 
 
 def _default_token() -> str:
@@ -129,7 +140,11 @@ class Mesh:
         home = self._s.home_dir(record.id)
         home.mkdir(parents=True, exist_ok=True)
         tier = TIERS[record.tier.value]
-        if record.tier is ModelTier.WORKHORSE:
+        if record.model_provider and record.model_name:
+            # Promotion captured the provider/model this agent arrived with —
+            # an adopted agent keeps its own brain, not the tier constants.
+            tier = TierConfig(provider=record.model_provider, model=record.model_name)
+        elif record.tier is ModelTier.WORKHORSE:
             # Workhorse means "the subscription this machine is signed into" —
             # inherit the provider/model Hermes itself wrote to the default
             # home's config, falling back to the constants only without one.
@@ -163,6 +178,20 @@ class Mesh:
         # Outbound: the token I present when calling each peer.
         for p in peers:
             lines.append(f"A2A_TOKEN_{_env_key(p.id)}={tokens[self._edge(record.id, p.id)]}")
+
+        # Telegram gateway: config.yaml carries only ${TELEGRAM_BOT_TOKEN};
+        # the real value is re-emitted here from the shared store on every
+        # rewire, and the allowlist is the env mechanism docs/30 documents.
+        if record.telegram_enabled:
+            tg_token = load_telegram_tokens(self._s).get(record.id, "")
+            if not tg_token:
+                raise MeshError(
+                    f"{record.id}: telegram is enabled but no bot token is "
+                    "stored in shared/telegram-tokens.json — set one via "
+                    f"PUT /api/agents/{record.id}/telegram or the promote flow"
+                )
+            lines.append(f"TELEGRAM_BOT_TOKEN={tg_token}")
+            lines.append(f"TELEGRAM_ALLOWED_USERS={record.telegram_allowed_users}")
 
         path = self._s.service_env(record.id)
         path.parent.mkdir(parents=True, exist_ok=True)

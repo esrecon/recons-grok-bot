@@ -66,6 +66,15 @@ export interface AuditFilters {
   q?: string;
 }
 
+// Per-agent Telegram gateway state. The bot token is write-only: the API
+// reports whether one is stored, never the value.
+export interface TelegramStatus {
+  enabled: boolean;
+  allowed_users: string;
+  token_set: boolean;
+  imported: boolean;
+}
+
 export type ProviderState = "configured" | "not_configured" | "error";
 
 export interface Provider {

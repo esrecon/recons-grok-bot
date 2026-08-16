@@ -34,8 +34,11 @@ def note(msg: str) -> None:
 
 
 # --- secret scan (defence in depth; check-all also greps) ---------------------
+# The last alternative is the Telegram BotFather token shape (digits:35 chars —
+# VERIFY the exact width against current BotFather output).
 SECRET_RE = re.compile(
-    r"sk-ant-[A-Za-z0-9_-]{8,}|sk-proj-[A-Za-z0-9_-]{8,}|sk-oat[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16}"
+    r"sk-ant-[A-Za-z0-9_-]{8,}|sk-proj-[A-Za-z0-9_-]{8,}|sk-oat[A-Za-z0-9_-]{8,}"
+    r"|AKIA[0-9A-Z]{16}|\b\d{8,10}:[A-Za-z0-9_-]{35}\b"
 )
 
 
@@ -92,6 +95,17 @@ def check_yaml_doc(label: str, doc: object, raw: str) -> None:
                 if not token:
                     fail(f"{label}: a2a peer '{peer}' has no auth token")
 
+    # An enabled telegram platform must never carry a literal token — only the
+    # ${TELEGRAM_BOT_TOKEN} placeholder the mesh resolves via service.env.
+    if isinstance(doc, dict) and isinstance(doc.get("gateway"), dict):
+        platforms = doc["gateway"].get("platforms")
+        tg = platforms.get("telegram") if isinstance(platforms, dict) else None
+        if isinstance(tg, dict) and tg.get("enabled"):
+            extra = tg.get("extra") if isinstance(tg.get("extra"), dict) else {}
+            token = extra.get("bot_token") or extra.get("token") or tg.get("token")
+            if not (isinstance(token, str) and token.startswith("${")):
+                fail(f"{label}: telegram bot_token must be a ${{ENV}} placeholder, never a literal")
+
 
 def _is_loopback_or_placeholder(v: str) -> bool:
     v = v.strip()
@@ -123,13 +137,35 @@ def check_rendered_templates() -> None:
                         a2a_port=A2A_PORT_BASE, is_lead=True, created_at="2026-08-15T00:00:00+00:00"),
             AgentRecord(id="scout", name="Scout", role="Research", tier=ModelTier.WORKHORSE,
                         a2a_port=A2A_PORT_BASE + 1, created_at="2026-08-15T00:00:00+00:00"),
+            # Telegram-enabled agent so the telegram block renders under check.
+            AgentRecord(id="comms", name="Comms", role="Messaging", tier=ModelTier.WORKHORSE,
+                        a2a_port=A2A_PORT_BASE + 2, created_at="2026-08-15T00:00:00+00:00",
+                        telegram_enabled=True, telegram_allowed_users="123456789"),
         ]
+        # The mesh fails loud on telegram-without-token — seed the store the
+        # way the API paths do.
+        from recons_orchestrator import telegram as telegram_store
+
+        telegram_store.store_token(settings, "comms", "PLACEHOLDER-TG-TOKEN")
         Mesh(settings, token_factory=lambda: "PLACEHOLDER").rewire(recs)
         for rec in recs:
             cfg_path = settings.home_dir(rec.id) / "config.yaml"
             raw = cfg_path.read_text("utf-8")
             check_yaml_doc(f"rendered:{rec.id}/config.yaml", yaml.safe_load(raw), raw)
-    note("orchestrator templates render + validate")
+
+        # Telegram invariants across the rendered pair: allowlist enforced via
+        # env, secret only in service.env, placeholder only in config.yaml.
+        comms_env = settings.service_env("comms").read_text("utf-8")
+        comms_cfg = (settings.home_dir("comms") / "config.yaml").read_text("utf-8")
+        if "TELEGRAM_ALLOWED_USERS=123456789" not in comms_env:
+            fail("rendered:comms/service.env: TELEGRAM_ALLOWED_USERS missing or empty")
+        if "PLACEHOLDER-TG-TOKEN" in comms_cfg:
+            fail("rendered:comms/config.yaml: real telegram token leaked into config")
+        if '"${TELEGRAM_BOT_TOKEN}"' not in comms_cfg:
+            fail("rendered:comms/config.yaml: telegram enabled but no ${TELEGRAM_BOT_TOKEN} placeholder")
+        if "gateway_allow_all_users" in (comms_env + comms_cfg).lower():
+            fail("rendered:comms: GATEWAY_ALLOW_ALL_USERS must never be emitted")
+    note("orchestrator templates render + validate (incl. telegram)")
 
 
 # --- static config/ files -----------------------------------------------------

@@ -38,7 +38,9 @@ if [ "$MODE" = "--in-place" ]; then
   tar -C "$RECONS_ROOT" -xzf "$PLAIN"
   chmod 600 "$RECONS_ROOT/shared/secrets.env" 2>/dev/null || true
   chmod 600 "$RECONS_ROOT/shared/a2a-tokens.json" 2>/dev/null || true
+  chmod 600 "$RECONS_ROOT/shared/telegram-tokens.json" 2>/dev/null || true
   find "$RECONS_ROOT/agents" -name 'service.env' -exec chmod 600 {} + 2>/dev/null || true
+  find "$RECONS_ROOT/agents" -name '.migrate-hermes.json' -exec chmod 600 {} + 2>/dev/null || true
 
   echo "== Restarting =="
   systemctl --user start recons-orchestrator.service 2>/dev/null || true

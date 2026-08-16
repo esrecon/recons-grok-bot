@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from recons_orchestrator.app import create_app, get_provisioner
+from recons_orchestrator.app import create_app, get_provisioner, get_settings
 from recons_orchestrator.provisioning import Provisioner
 from recons_orchestrator.services import RecordingServiceManager
 
@@ -14,6 +14,7 @@ from recons_orchestrator.services import RecordingServiceManager
 @pytest.fixture
 def client(settings):
     app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_provisioner] = lambda: Provisioner(
         settings, services=RecordingServiceManager()
     )
@@ -111,3 +112,67 @@ def test_pause_and_resume_of_imported_agents_conflict(client, tmp_path):
     )
     assert client.post("/api/agents/hermes/pause").status_code == 409
     assert client.post("/api/agents/hermes/resume").status_code == 409
+
+
+def test_promote_demote_and_telegram_endpoints(client, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  provider: nous\n  default: hermes-4-70b\n"
+    )
+    (home / "SOUL.md").write_text("# Hermes\n")
+    client.post("/api/agents", json={"name": "Scout", "role": "x"})
+    assert (
+        client.post("/api/import", json={"home": str(home), "name": "Hermes"}).status_code
+        == 201
+    )
+
+    # Telegram on an imported agent is refused with a pointer to the cutover.
+    refused = client.put(
+        "/api/agents/hermes/telegram",
+        json={"enabled": True, "allowed_users": "42", "token": "1:x"},
+    )
+    assert refused.status_code == 409
+
+    promoted = client.post(
+        "/api/agents/hermes/promote",
+        json={
+            "telegram_enabled": True,
+            "telegram_allowed_users": "42",
+            "telegram_token": "123456789:tok",
+            "make_lead": True,
+        },
+    )
+    assert promoted.status_code == 200
+    body = promoted.json()
+    assert body["record"]["imported"] is False
+    assert body["record"]["is_lead"] is True
+    assert body["record"]["status"] == "paused"  # nothing started by promote
+    assert body["telegram_token_source"] == "provided"
+
+    # Write-only contract: presence is reported, the token never is.
+    tg = client.get("/api/agents/hermes/telegram")
+    assert tg.json() == {
+        "enabled": True,
+        "allowed_users": "42",
+        "token_set": True,
+        "imported": False,
+    }
+    assert "123456789" not in tg.text
+
+    # Promote is one-way until demote; resume now works (managed).
+    assert client.post("/api/agents/hermes/promote", json={}).status_code == 409
+    assert client.post("/api/agents/hermes/resume").json()["status"] == "running"
+
+    demoted = client.post("/api/agents/hermes/demote")
+    assert demoted.status_code == 200
+    assert demoted.json()["imported"] is True
+    assert client.post("/api/agents/hermes/demote").status_code == 409
+
+    # Bad allowlist on a managed agent → 400.
+    client.post("/api/agents", json={"name": "Comms", "role": "y"})
+    bad = client.put(
+        "/api/agents/comms/telegram",
+        json={"enabled": True, "allowed_users": "not-numeric", "token": "1:x"},
+    )
+    assert bad.status_code == 400
