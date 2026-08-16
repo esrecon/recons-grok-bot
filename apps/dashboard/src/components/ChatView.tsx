@@ -8,18 +8,49 @@ import { Composer } from "./Composer";
 let counter = 0;
 const nextId = () => `m${Date.now()}-${counter++}`;
 
+// Survives unmounts: navigating to Skills/Audit and back must not wipe an
+// in-flight conversation. Keyed by agent id; server history remains the
+// durable record underneath.
+const threadCache = new Map<string, ChatMessage[]>();
+
 // The conversation column: header pill (avatar + name + live-view button), the
 // message list, and the composer. Streams assistant replies token-by-token.
 export function ChatView({ agent }: { agent: Agent }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => threadCache.get(agent.id) ?? [],
+  );
   const [streaming, setStreaming] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Reset the thread when switching agents (kept client-side for the shell;
-  // real history load lands with the chat proxy).
+  // On agent switch: show the cached in-memory thread instantly, then load the
+  // durable history from the agent's own state.db. History wins when it is
+  // longer (it includes turns finished after we navigated away).
   useEffect(() => {
-    setMessages([]);
+    setMessages(threadCache.get(agent.id) ?? []);
+    let live = true;
+    api
+      .history(agent.id)
+      .then((h) => {
+        if (!live || h.messages.length === 0) return;
+        const loaded: ChatMessage[] = h.messages.map((m) => ({
+          id: nextId(),
+          role: m.role === "user" ? "user" : "assistant",
+          text: m.text,
+        }));
+        setMessages((cur) => (loaded.length >= cur.length ? loaded : cur));
+      })
+      .catch(() => {
+        /* no history endpoint or no db yet — the cached thread stands */
+      });
+    return () => {
+      live = false;
+    };
   }, [agent.id]);
+
+  // Mirror every change into the cache so unmounting loses nothing.
+  useEffect(() => {
+    threadCache.set(agent.id, messages);
+  }, [agent.id, messages]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });

@@ -14,6 +14,7 @@ vi.mock("../api", () => ({
     setStatus: vi.fn(),
     deleteAgent: vi.fn(),
     streamChat: vi.fn(),
+    history: vi.fn().mockResolvedValue({ messages: [] }),
     audit: vi.fn().mockResolvedValue({ events: [], count: 0 }),
     auditExportUrl: () => "/api/audit/export.jsonl",
     skills: vi.fn().mockResolvedValue({ shared: [], pending: [] }),

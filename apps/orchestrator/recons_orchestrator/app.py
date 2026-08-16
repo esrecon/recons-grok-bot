@@ -228,6 +228,32 @@ def create_app() -> FastAPI:
         status, payload = receiver().handle(body, dict(request.headers))
         return JSONResponse(status_code=status, content=payload)
 
+    # --- chat history: the agent's own state.db is the source of truth --------
+    # Hermes records every turn there, so history survives page reloads, view
+    # switches, and even conversations held outside the dashboard.
+    @app.get("/api/agents/{agent_id}/history")
+    def chat_history(
+        agent_id: str,
+        limit: int = 100,
+        prov: Provisioner = Depends(get_provisioner),
+        settings: Settings = Depends(get_settings),
+    ) -> dict:
+        from pathlib import Path as _Path
+
+        from .ledger import read_state_db
+
+        record = prov.get_agent(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        home = _Path(record.home) if record.home else settings.home_dir(agent_id)
+        events = read_state_db(agent_id, home / "state.db")
+        turns = [
+            {"role": e.role, "text": e.text, "ts_iso": e.ts_iso}
+            for e in events
+            if e.kind == "message" and e.role in ("user", "assistant") and e.text
+        ]
+        return {"messages": turns[-limit:]}
+
     # --- chat: one turn with an agent, streamed as SSE ------------------------
     @app.post("/api/agents/{agent_id}/messages")
     def send_message(

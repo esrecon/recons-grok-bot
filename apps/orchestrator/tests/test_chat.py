@@ -157,6 +157,67 @@ def test_endpoint_rejects_empty_message(client, settings):
     assert client.post("/api/agents/sophie/messages", json={"text": "  "}).status_code == 422
 
 
+def test_ansi_escapes_are_stripped(settings, monkeypatch, tmp_path):
+    """Terminal colour codes must not reach the chat bubble."""
+    script = tmp_path / "colour.sh"
+    script.write_text("#!/bin/sh\nprintf '\\033[31mred alert\\033[0m plain\\n'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("RECONS_CHAT_CMD", f"{script} {{text}}")
+
+    events = list(ChatBackend(settings).stream(_record(settings.root), "hi"))
+    text = "".join(e.get("text", "") for e in events if e["type"] == "token")
+    assert "red alert" in text and "plain" in text
+    assert "\x1b" not in text
+
+
+def test_child_gets_no_tty_and_unbuffered_env(settings, monkeypatch, tmp_path):
+    """stdin is EOF (a TUI cannot hang us) and buffering is discouraged."""
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/bin/sh\n"
+        "if [ -t 0 ]; then echo stdin=tty; else echo stdin=notty; fi\n"
+        "read -r line && echo \"got:$line\" || echo stdin=eof\n"
+        "echo \"unbuf=$PYTHONUNBUFFERED term=$TERM\"\n"
+    )
+    probe.chmod(0o755)
+    monkeypatch.setenv("RECONS_CHAT_CMD", f"{probe} {{text}}")
+
+    events = list(ChatBackend(settings).stream(_record(settings.root), "hi"))
+    text = "".join(e.get("text", "") for e in events if e["type"] == "token")
+    assert "stdin=notty" in text
+    assert "stdin=eof" in text          # read hit EOF instantly instead of hanging
+    assert "unbuf=1" in text and "term=dumb" in text
+    assert events[-1]["type"] == "done"
+
+
+# --- history ------------------------------------------------------------------
+def test_history_endpoint_returns_the_agents_recorded_turns(client, settings):
+    from recons_orchestrator.models import AgentSpec
+    from tests.fixtures import make_state_db
+
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+    make_state_db(settings.home_dir("sophie") / "state.db", agent="sophie",
+                  base_ts=1_786_000_000)
+
+    body = client.get("/api/agents/sophie/history").json()
+    roles = [m["role"] for m in body["messages"]]
+    assert roles == ["user", "assistant", "assistant"]
+    assert body["messages"][0]["text"] == "Find three suppliers"
+
+
+def test_history_empty_when_agent_has_no_db_yet(client, settings):
+    from recons_orchestrator.models import AgentSpec
+
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+    assert client.get("/api/agents/sophie/history").json() == {"messages": []}
+
+
+def test_history_404_for_unknown_agent(client):
+    assert client.get("/api/agents/nope/history").status_code == 404
+
+
 # --- shared credentials -------------------------------------------------------
 def test_new_agent_links_the_shared_auth_store(settings, monkeypatch, tmp_path):
     from recons_orchestrator.models import AgentSpec
