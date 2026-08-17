@@ -71,10 +71,21 @@ Ask the lead agent in plain language:
 
 > "Ask Scout to price these three suppliers, then summarise what comes back."
 
-Hermes gives agents `a2a_list` (who's available), `a2a_call` (hand off a task),
+Hermes gives agents `a2a_list` (who's configured), `a2a_discover` (fetch a
+peer's live agent card — the reachability probe), `a2a_call` (hand off a task),
 `a2a_orchestrate` (fan out to several) and `a2a_history`. Every call and reply
 appends to `a2a_audit.jsonl`, which the **Audit log** picks up and renders as
 `Recon → Scout` with both halves linked by session key.
+
+**These tools are not on by default.** Upstream Hermes ships the `a2a` toolset
+default-off and decouples it from the inbound A2A server: the
+`gateway.platforms.a2a` block makes an agent *answer* on its port ("A2A
+connected"), while the outbound tools only appear in the manifest when the
+toolset is listed in `platform_toolsets` for the platform the conversation
+arrives on. The generated config enables it for `cli` (dashboard chat runs
+`hermes -z`) and `telegram` (when enabled); inbound A2A turns get it natively.
+If an agent claims it "has no A2A tools", check that its `config.yaml` has the
+`platform_toolsets` block and restart its gateway unit.
 
 Practical notes:
 
@@ -88,6 +99,55 @@ Practical notes:
 - **Subagents are different.** `delegate_task` spawns a short-lived child of the
   *same* agent for parallel work; A2A is between your named, permanent agents.
   Both show in the ledger.
+
+## Mailbox health check — a safe capability probe
+
+"Is Sophie's email actually working?" should not require reading her mail. The
+shared **mailbox-health-check** skill (vendored in `skills/`, deployed to
+`shared/skills/` by quickstart/update) defines a metadata-only probe both
+sides follow:
+
+- The lead sends, over `a2a_call`: *"MAILBOX HEALTH CHECK: run the shared
+  mailbox-health-check skill and reply with only its JSON result."*
+- The email-role agent may only confirm its integration exists, authenticate,
+  and list folder/label *names* — never message bodies, attachments, contacts
+  or calendars; never a send, delete, move, flag or config change.
+- The reply is one JSON object (`email_access`, `provider_type`,
+  `account_configured`, `authenticated`, `metadata_check`, `error_class`,
+  `safe_summary`) with no secrets, hostnames or mailbox addresses. A
+  `not_configured` result is a valid, honest answer — the skill forbids
+  attempting to configure anything.
+
+Everything stronger — reading mail, sending, calendar changes, credential
+changes — stays behind the normal gates: the receiving agent's `approvals.mode:
+smart`, the docker terminal sandbox, and the team rule that approvals stay with
+Tony. Note Hermes has no *outbound* per-peer allowlist (`a2a_call` is
+free-form messaging by design), so the enforcement point is deliberately the
+receiving agent, whose approval gates a delegated request cannot bypass.
+
+### Verifying it on the box
+
+```bash
+# The five a2a_* tools are in the manifest for dashboard chat (cli platform):
+sudo -u <operator> HERMES_HOME=/opt/recons/agents/<lead-id>/home \
+  hermes chat --list-tools | grep '^a2a_'
+
+# The lead can see its peers (a2a_list) …
+sudo -u <operator> HERMES_HOME=/opt/recons/agents/<lead-id>/home \
+  hermes -z "Use a2a_list and report the configured peers."
+
+# … the target agent is live (its agent card answers) …
+curl -s http://127.0.0.1:<peer-a2a-port>/.well-known/agent-card.json | head -c 400
+
+# … and a tokenless caller is rejected (inbound auth intact):
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:<peer-a2a-port>/
+# expect: 401
+
+# End to end, through the lead:
+sudo -u <operator> HERMES_HOME=/opt/recons/agents/<lead-id>/home \
+  hermes -z 'Ask <peer-id> over a2a_call: "MAILBOX HEALTH CHECK: run the shared mailbox-health-check skill and reply with only its JSON result." Then relay the JSON verbatim.'
+```
 
 ## Lifecycle
 
@@ -104,6 +164,8 @@ after backing it up.
 ## Verify
 
 - Each agent answers on its own tier and knows its job when asked "what do you do?"
+- `hermes chat --list-tools` (with the agent's `HERMES_HOME`) lists the five `a2a_*` tools
 - `Recon` can delegate to `Scout`, and both halves appear joined in the Audit log
 - An A2A call with a wrong/missing token is rejected
+- A mailbox health check returns the JSON contract with no secrets in it
 - `grep -c A2A_TOKEN /opt/recons/agents/*/service.env` shows N-1 tokens per agent

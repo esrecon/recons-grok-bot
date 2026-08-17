@@ -140,6 +140,19 @@ if [ "$REPO_DIR" != "$RECONS_ROOT/app" ]; then
   cp -a "$REPO_DIR/." "$RECONS_ROOT/app/"
   chown -R "$TARGET_USER:$TARGET_USER" "$RECONS_ROOT/app"
 fi
+# Vendored skills ship in the repo; agents read the shared library. Install
+# them there so the first agent created already has them (update.sh keeps
+# them fresh on every update; operator-taught slugs are never touched).
+if [ -d "$REPO_DIR/skills" ]; then
+  for skill_dir in "$REPO_DIR"/skills/*/; do
+    [ -f "${skill_dir}SKILL.md" ] || continue
+    slug="$(basename "$skill_dir")"
+    install -d -m 700 -o "$TARGET_USER" -g "$TARGET_USER" "$RECONS_ROOT/shared/skills/$slug"
+    cp -a "${skill_dir}." "$RECONS_ROOT/shared/skills/$slug/"
+    chown -R "$TARGET_USER:$TARGET_USER" "$RECONS_ROOT/shared/skills/$slug"
+  done
+  note "vendored skills installed into shared/skills"
+fi
 as_user "cd '$RECONS_ROOT/app/apps/orchestrator' && uv sync --frozen >/dev/null"
 systemctl_do daemon-reload
 if ! systemctl_do enable --now recons-orchestrator.service; then

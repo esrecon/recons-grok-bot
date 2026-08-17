@@ -44,10 +44,31 @@ terminal:
   backend: docker                     # sandbox tool execution on the VPS
   # VERIFY docker limit keys; keep cap-drop ALL + resource limits (see docs/60)
 
+# --- Tool exposure ------------------------------------------------------------
+# The outbound A2A tools (a2a_list, a2a_discover, a2a_call, a2a_history,
+# a2a_orchestrate) live in the plugin toolset "a2a", which Hermes ships
+# DEFAULT-OFF (hermes_cli/tools_config.py _DEFAULT_OFF_TOOLSETS). The gateway
+# block below only serves *inbound* A2A — without this list an agent shows as
+# "A2A connected" yet has zero a2a_* tools in its manifest.
+#
+# Verified against hermes-agent source: an explicit list replaces the
+# platform's default entirely, so it must restate the platform composite
+# (hermes-cli / hermes-telegram) alongside "a2a"; explicitly listed toolsets
+# survive the default-off filter (upstream #81163). Dashboard chat runs
+# `hermes -z`, which resolves tools for the "cli" platform. The "a2a"
+# platform must NOT get an entry here: it already exempts its own toolset by
+# default, and its composite (hermes-a2a) is registry-generated rather than a
+# static toolset, so an explicit list would silently drop the core tools.
+platform_toolsets:
+  cli: [hermes-cli, a2a]
+{% if record.telegram_enabled %}  telegram: [hermes-telegram, a2a]
+{% endif %}
+
 # --- Agent-to-agent (A2A) -----------------------------------------------------
 # This agent's inbound A2A server. The bearer tokens peers must present live in
 # service.env (A2A_PEER_TOKENS), not here. Bound to loopback; reachable only
-# over the tailnet.
+# over the tailnet. With A2A_PEER_TOKENS set, Hermes rejects tokenless inbound
+# requests with 401 (verified: plugins/platforms/a2a/security.py authenticate).
 gateway:
   platforms:
     a2a:
@@ -72,7 +93,7 @@ a2a_agents:
     auth:
       type: bearer
       token: "${A2A_TOKEN_{{ peer.id | upper | replace('-', '_') }}}"   # from service.env
-    capabilities: [chat, terminal, files]   # VERIFY capability names
+    capabilities: [chat, terminal, files]   # free-form labels; a2a_orchestrate matches on them
 {% endfor %}{% if not peers %}  {}
 {% endif %}
 

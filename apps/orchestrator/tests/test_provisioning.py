@@ -34,6 +34,9 @@ def test_create_agent_provisions_home_soul_and_config(provisioner, settings):
     assert cfg["skills"]["write_approval"] is True
     assert cfg["approvals"]["mode"] == "smart"
     assert cfg["terminal"]["backend"] == "docker"
+    # Outbound A2A tools are a default-off Hermes toolset; without this the
+    # agent is "A2A connected" (inbound) but has no a2a_* tools.
+    assert cfg["platform_toolsets"]["cli"] == ["hermes-cli", "a2a"]
 
 
 def test_soul_is_user_owned_after_creation(provisioner, settings):
