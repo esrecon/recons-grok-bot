@@ -10,7 +10,8 @@ const nextId = () => `m${Date.now()}-${counter++}`;
 
 // The conversation column: header pill (avatar + name + live-view button), the
 // message list, and the composer. Streams assistant replies token-by-token.
-export function ChatView({ agent }: { agent: Agent }) {
+export function ChatView({ agent, onChanged }: { agent: Agent; onChanged?: () => void }) {
+  void onChanged;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
