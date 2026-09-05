@@ -4,7 +4,7 @@ no test touches systemd."""
 from __future__ import annotations
 
 from recons_orchestrator.models import AgentSpec
-from recons_orchestrator.services import RecordingServiceManager, SystemdUserServiceManager
+from recons_orchestrator.services import RecordingServiceManager, SystemdServiceManager
 
 from tests.auth import build_app, login, make_client
 
@@ -21,7 +21,7 @@ def test_systemd_status_parses_is_active():
         calls.append(cmd)
         return Result("inactive\n" if "clerk" in cmd[-1] else "active\n")
 
-    sm = SystemdUserServiceManager(runner=runner)
+    sm = SystemdServiceManager(runner=runner, scope="user")
     assert sm.status("hermes-gateway@recon.service") == "active"
     assert sm.status("hermes-gateway@clerk.service") == "inactive"
     assert calls[0][:3] == ["systemctl", "--user", "is-active"]

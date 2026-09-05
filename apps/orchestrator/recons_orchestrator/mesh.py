@@ -11,10 +11,6 @@ When the roster changes, `rewire` regenerates:
     for callers, plus the `A2A_TOKEN_<PEER>` values it uses to call out).
 
 Secrets only ever land in `service.env` (chmod 600), never in `config.yaml`.
-
-The orchestrator itself is a caller too: it holds an `orchestrator->agent`
-token for every agent so the dashboard's chat proxy can talk A2A to the
-agent's loopback port, authenticated and audited like any other peer.
 """
 
 from __future__ import annotations
@@ -26,12 +22,22 @@ from typing import Callable
 import yaml
 from jinja2 import Environment, PackageLoader, select_autoescape
 
-from .config import Settings, TIERS
-from .models import AgentRecord
+from . import custom_models
+from .config import Settings, TierConfig, TIERS, inherited_model
+from .models import AgentRecord, ModelTier
+from .telegram import load_tokens as load_telegram_tokens
 
 TokenFactory = Callable[[], str]
 
-ORCHESTRATOR_ID = "orchestrator"
+
+class MeshError(RuntimeError):
+    """The roster demands something the shared stores cannot provide.
+
+    Raised fail-loud from rewire (e.g. telegram enabled with no stored bot
+    token). The API paths store the token before flipping the flag, so this
+    only fires on hand-mangled state — where the boot rewire's blanket
+    exception handler will log it and leave that agent's files stale.
+    """
 
 
 def _default_token() -> str:
@@ -104,27 +110,29 @@ class Mesh:
         """
         tokens = self._load_tokens()
         ids = {r.id for r in records}
-        callers = ids | {ORCHESTRATOR_ID}
 
         # Prune stale edges (agents that were deleted).
         for edge in list(tokens):
             caller, target = edge.split("->", 1)
-            if caller not in callers or target not in ids:
+            if caller not in ids or target not in ids:
                 del tokens[edge]
 
-        # Ensure every directed edge in the full mesh has a token, plus the
-        # orchestrator's own inbound edge to each agent (chat proxy).
+        # Ensure every directed edge in the full mesh has a token.
         for caller in ids:
             for target in ids:
                 if caller != target:
                     self._edge_token(tokens, caller, target)
-        for target in ids:
-            self._edge_token(tokens, ORCHESTRATOR_ID, target)
 
         self._save_tokens(tokens)
 
         by_id = {r.id: r for r in records}
         for rec in records:
+            # Never rewrite an imported agent's files. It arrived with a working
+            # config we don't own, and clobbering it would break the agent
+            # outside this dashboard. Wiring one into the mesh is a deliberate,
+            # manual step (docs/50-agents-a2a.md).
+            if rec.imported:
+                continue
             peers = [by_id[p] for p in sorted(ids) if p != rec.id]
             self._write_config(rec, peers)
             self._write_service_env(rec, peers, tokens)
@@ -132,14 +140,48 @@ class Mesh:
     def _write_config(self, record: AgentRecord, peers: list[AgentRecord]) -> None:
         home = self._s.home_dir(record.id)
         home.mkdir(parents=True, exist_ok=True)
+        tier = TIERS[record.tier.value]
+        if record.model_provider and record.model_name:
+            # Promotion captured the provider/model this agent arrived with —
+            # an adopted agent keeps its own brain, not the tier constants.
+            tier = TierConfig(provider=record.model_provider, model=record.model_name)
+        elif record.tier is ModelTier.WORKHORSE:
+            # Workhorse means "the subscription this machine is signed into" —
+            # inherit the provider/model Hermes itself wrote to the default
+            # home's config, falling back to the constants only without one.
+            tier = inherited_model() or tier
         rendered = self._jinja.get_template("config.yaml.j2").render(
             record=record,
-            tier=TIERS[record.tier.value],
+            tier=tier,
+            # Operator-registered providers (Customize tab) are not part of the
+            # shared Hermes config, so the agent's own config must define them.
+            custom_provider=custom_models.get(self._s, tier.provider),
             peers=peers,
             shared_skills_dir=str(self._s.shared_skills_dir),
             webhook_receiver_url=self._s.webhook_receiver_url,
             webhook_secret_env=self._s.webhook_secret_env,
         )
+        # Operator extras: user-owned YAML appended verbatim on every render,
+        # so custom blocks (MCP servers, extra peers) survive regeneration.
+        # Duplicate top-level keys resolve last-wins, giving extras override
+        # power — deliberate, it is the operator's escape hatch.
+        extras_file = self._s.config_extras(record.id)
+        if extras_file.is_file():
+            extras = extras_file.read_text("utf-8").strip()
+            if extras:
+                try:
+                    yaml.safe_load(extras)
+                except yaml.YAMLError as exc:
+                    # A broken extras file must fail loud, never be skipped —
+                    # silently dropping it would disconnect the very tools it
+                    # exists to preserve.
+                    raise MeshError(f"{record.id}: {extras_file} is not valid YAML: {exc}") from exc
+                rendered += (
+                    "\n# --- Operator extras (config-extras.yaml — user-owned, appended\n"
+                    "# verbatim on every regeneration; edit that file, not this one) ---\n"
+                    + extras
+                    + "\n"
+                )
         # Fail loudly if the template ever emits invalid YAML.
         yaml.safe_load(rendered)
         (home / "config.yaml").write_text(rendered, "utf-8")
@@ -153,15 +195,28 @@ class Mesh:
             f"A2A_HOST=127.0.0.1",
             f"A2A_PORT={record.a2a_port}",
         ]
-        # Inbound: which callers may reach me, and with what token. The
-        # orchestrator is always a permitted caller (dashboard chat).
-        inbound = [f"{p.id}:{tokens[self._edge(p.id, record.id)]}" for p in peers]
-        inbound.append(f"{ORCHESTRATOR_ID}:{tokens[self._edge(ORCHESTRATOR_ID, record.id)]}")
-        peer_tokens = ",".join(inbound)
+        # Inbound: which callers may reach me, and with what token.
+        peer_tokens = ",".join(
+            f"{p.id}:{tokens[self._edge(p.id, record.id)]}" for p in peers
+        )
         lines.append(f"A2A_PEER_TOKENS={peer_tokens}")
         # Outbound: the token I present when calling each peer.
         for p in peers:
             lines.append(f"A2A_TOKEN_{_env_key(p.id)}={tokens[self._edge(record.id, p.id)]}")
+
+        # Telegram gateway: config.yaml carries only ${TELEGRAM_BOT_TOKEN};
+        # the real value is re-emitted here from the shared store on every
+        # rewire, and the allowlist is the env mechanism docs/30 documents.
+        if record.telegram_enabled:
+            tg_token = load_telegram_tokens(self._s).get(record.id, "")
+            if not tg_token:
+                raise MeshError(
+                    f"{record.id}: telegram is enabled but no bot token is "
+                    "stored in shared/telegram-tokens.json — set one via "
+                    f"PUT /api/agents/{record.id}/telegram or the promote flow"
+                )
+            lines.append(f"TELEGRAM_BOT_TOKEN={tg_token}")
+            lines.append(f"TELEGRAM_ALLOWED_USERS={record.telegram_allowed_users}")
 
         path = self._s.service_env(record.id)
         path.parent.mkdir(parents=True, exist_ok=True)

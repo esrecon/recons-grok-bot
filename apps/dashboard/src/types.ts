@@ -11,8 +11,18 @@ export interface Agent {
   tier: ModelTier;
   avatar_color: string;
   status: AgentStatus;
+  status_detail?: string;
   is_lead: boolean;
   created_at: string;
+  // Adopted from an existing Hermes install: owns its home and, until
+  // promoted, runs its gateway outside this platform.
+  imported?: boolean;
+  // Explicit model override (Customize tab / captured at promotion). Both or
+  // neither; null means "the tier's default".
+  model_provider?: string | null;
+  model_name?: string | null;
+  // Cache-buster for the generated headshot; null/absent = no image yet.
+  avatar_version?: number | null;
 }
 
 export interface NewAgentInput {
@@ -63,6 +73,55 @@ export interface AuditFilters {
   q?: string;
 }
 
+// Per-agent Telegram gateway state. The bot token is write-only: the API
+// reports whether one is stored, never the value.
+export interface TelegramStatus {
+  enabled: boolean;
+  allowed_users: string;
+  token_set: boolean;
+  imported: boolean;
+}
+
+export type ProviderState = "configured" | "not_configured" | "error";
+
+export interface Provider {
+  id: "nous" | "openai" | "anthropic" | string;
+  label: string;
+  tier: string;
+  method: "api_key" | "oauth" | "service";
+  state: ProviderState;
+  detail: string;
+  docs?: string;
+}
+
+// A Hermes agent already on the machine that can be adopted into the roster.
+export interface DiscoveredAgent {
+  id: string;
+  name: string;
+  home: string;
+  role: string;
+  model: string;
+  already_imported: boolean;
+}
+
+export interface SetupStatus {
+  providers: Provider[];
+  has_provider: boolean;
+  has_agents: boolean;
+  complete: boolean;
+}
+
+export interface LoginSession {
+  id: string;
+  provider: string;
+  status: "starting" | "awaiting_user" | "success" | "failed";
+  url: string | null;
+  code: string | null;
+  message: string;
+  command: string;
+  output: string[];
+}
+
 export interface Skill {
   slug: string;
   name: string;
@@ -80,6 +139,25 @@ export interface Routine {
   enabled: boolean;
   deliver?: string | null;
 }
+
+// One selectable model in the Customize tab's dropdown (/api/models).
+export interface ModelOption {
+  provider: string;
+  model: string;
+  label: string;
+  tier: ModelTier | null;
+  source: "tier" | "custom";
+  available: boolean;
+}
+
+// Image-generation settings (write-only key, as everywhere).
+export interface ImageSettings {
+  key_set: boolean;
+  base_url: string;
+  model: string;
+}
+
+export type ImproveField = "name" | "role" | "personality" | "soul";
 
 export interface ChatMessage {
   id: string;
@@ -130,7 +208,7 @@ export interface WebhookFeedStatus {
   rejected_count: number;
 }
 
-export interface ProvidersResponse {
+export interface CredentialsResponse {
   providers: ProviderStatus[];
   integrations: Record<string, WebhookFeedStatus>;
   restart_required: boolean;
@@ -161,9 +239,9 @@ export interface SecurityPosture {
 export interface ServiceStatus {
   agent: string;
   name: string;
-  unit: string;
+  unit: string | null; // null: imported agent, gateway runs outside this platform
   status: string;
-  expected: "running" | "paused";
+  expected: "running" | "paused" | "external";
   healthy: boolean;
 }
 

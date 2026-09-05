@@ -3,9 +3,10 @@
 # /opt/recons/agents/scout/home. The orchestrator enables/stops these when you
 # create, pause or delete an agent in the dashboard.
 #
-# Install to ~/.config/systemd/user/ and run:
-#   systemctl --user daemon-reload
-#   sudo loginctl enable-linger $USER    # survive logout/reboot
+# vps-bootstrap.sh installs this in whichever systemd scope suits the account:
+# user scope (~/.config/systemd/user/, needs `loginctl enable-linger $USER` to
+# survive logout) for a normal user, or system scope (/etc/systemd/system/) when
+# running as root, which has no user-level systemd instance.
 [Unit]
 Description=Hermes agent gateway (%i)
 After=network-online.target
@@ -16,7 +17,10 @@ Type=simple
 # Shared secrets first, then the per-agent env (HERMES_HOME, A2A tokens).
 EnvironmentFile=/opt/recons/shared/secrets.env
 EnvironmentFile=/opt/recons/agents/%i/service.env
-ExecStart=%h/.local/bin/hermes gateway
+# Resolve hermes from PATH rather than hardcoding a location: the installer
+# puts it in /usr/local/bin for a system-wide install and ~/.local/bin for a
+# per-user one, and %h would point at the wrong place in system scope.
+ExecStart=/usr/bin/env hermes gateway
 Restart=on-failure
 RestartSec=5
 

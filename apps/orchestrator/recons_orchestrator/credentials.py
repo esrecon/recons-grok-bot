@@ -96,17 +96,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         health_keys=("NOUS_API_KEY",),
     ),
     ProviderSpec(
-        id="telegram",
-        name="Telegram gateway",
-        description="Optional messaging fallback (docs/30). Allow-list your own user id.",
-        keys=(
-            CredentialKey("TELEGRAM_BOT_TOKEN", "Bot token"),
-            CredentialKey("TELEGRAM_ALLOWED_USERS", "Allowed user ids", secret=False,
-                          hint="Comma-separated Telegram user ids"),
-        ),
-        health_keys=("TELEGRAM_BOT_TOKEN",),
-    ),
-    ProviderSpec(
         id="orchestrator",
         name="Orchestrator",
         description="Audit feed signing and the operator login.",
@@ -272,6 +261,11 @@ class EnvFileCredentialStore:
                 v = _unquote(m.group(2))
                 value = v or None
         return value
+
+    def note_change(self, key: str, *, actor: str, action: str) -> None:
+        """Record who/when for a key written through another path (the provider
+        sign-in flows, image settings) so provenance stays complete. No value."""
+        self._touch_meta(key, actor, action)
 
     def status(self, key: str) -> CredentialStatus:
         _check_key(key, for_write=False)

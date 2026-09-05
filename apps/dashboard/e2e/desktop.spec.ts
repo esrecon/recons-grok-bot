@@ -123,24 +123,26 @@ test.describe("desktop", () => {
       await page.getByText("Settings").click();
       await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
       await expect(page.getByText(/Signed in as/)).toBeVisible();
+      // Model providers keep their sign-in cards; connected ones show provenance.
+      await expect(page.getByTestId("provider-nous").getByText("Connected")).toBeVisible();
 
-      const anthropic = page.getByTestId("provider-anthropic");
-      await expect(anthropic.getByText("Not set")).toBeVisible();
-      await anthropic.getByRole("button", { name: "Set" }).click();
-      const input = anthropic.getByLabel(/New value/);
+      const wrapper = page.getByTestId("provider-claude_wrapper");
+      await expect(wrapper.getByText("Not set")).toBeVisible();
+      await wrapper.getByRole("button", { name: "Set" }).click();
+      const input = wrapper.getByLabel(/New value/);
       await expect(input).toHaveAttribute("type", "password");
       await input.fill(SECRET);
-      await anthropic.getByRole("button", { name: "Save" }).click();
+      await wrapper.getByRole("button", { name: "Save" }).click();
 
-      await expect(anthropic.getByText("Configured")).toBeVisible();
-      await expect(page.getByText(/restart/i).first()).toBeVisible();
+      await expect(wrapper.getByText("Not set")).toBeHidden();
+      await expect(page.getByRole("status")).toContainText(/restart/i);
       // Never echoed: not in the page, not in the API.
       expect(await page.content()).not.toContain(SECRET);
-      const providers = await page.request.get("/api/settings/providers");
-      expect(await providers.text()).not.toContain(SECRET);
+      const creds = await page.request.get("/api/settings/credentials");
+      expect(await creds.text()).not.toContain(SECRET);
       const audit = await page.request.get("/api/audit?source=operator");
       const auditText = await audit.text();
-      expect(auditText).toContain("created ANTHROPIC_API_KEY");
+      expect(auditText).toContain("created CLAUDE_WRAPPER_API_KEY");
       expect(auditText).not.toContain(SECRET);
       // Reveal is not a thing.
       await expect(page.getByText(/reveal/i)).toHaveCount(0);
@@ -158,6 +160,44 @@ test.describe("desktop", () => {
       expect(r.status()).toBe(403);
       // And the roster is unaffected.
       await expect(page.getByLabel("Agents").getByText("Scout")).toBeVisible();
+    });
+
+    test("customize edits an agent, improves text and paints a headshot", async ({ page }) => {
+      // Only the nav item exists before the view mounts, so the bare text is
+      // unambiguous here (the view's own header appears after the click).
+      await page.getByText("Customize").click();
+
+      // Pick Scout in the agent chips.
+      await page.getByLabel("Customize Scout").click();
+      const jobRole = page.getByLabel("Job role", { exact: true });
+      await expect(jobRole).toHaveValue("Researches suppliers and drafts outreach");
+
+      // Save an edited job role; the roster shows it after the refresh.
+      await jobRole.fill("Sources rare console parts");
+      await page.getByLabel("Save identity").click();
+      await expect(
+        page.getByLabel("Agents").getByText("Sources rare console parts"),
+      ).toBeVisible();
+
+      // ✨ Improve rewrites a field through the assist endpoint.
+      const personality = page.getByLabel("Personality", { exact: true });
+      await personality.fill("be nice");
+      await page.getByLabel("Improve personality").click();
+      await expect(personality).toHaveValue("be nice (polished)");
+
+      // Generate the headshot: the button flips to Regenerate and the picker
+      // chip swaps the blob for the generated image.
+      await page.getByRole("button", { name: "Generate headshot" }).click();
+      await expect(
+        page.getByRole("button", { name: "Regenerate headshot" }),
+      ).toBeVisible();
+      await expect(page.getByAltText("Scout avatar").first()).toBeVisible();
+
+      // Choose a different model; after the save the roster round-trips it and
+      // the Save button disables again (selection == saved value).
+      await page.getByLabel("Model", { exact: true }).selectOption("nous|hermes-4-70b");
+      await page.getByLabel("Save model").click();
+      await expect(page.getByLabel("Save model")).toBeDisabled();
     });
 
     test("sign out returns to the login screen", async ({ page }) => {

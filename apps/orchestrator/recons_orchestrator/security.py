@@ -28,10 +28,12 @@ import base64
 import hashlib
 import hmac
 import logging
+import os
 import secrets
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Mapping
 from urllib.parse import urlsplit
 
@@ -432,7 +434,9 @@ class SecurityMiddleware:
                     headers[name] = value
                 if hsts:
                     headers["strict-transport-security"] = HSTS_VALUE
-                if is_api:
+                if is_api and "cache-control" not in headers:
+                    # Default API responses to no-store; a route that sets its
+                    # own policy (versioned, immutable assets) keeps it.
                     headers["cache-control"] = "no-store"
             await send(message)
 
@@ -440,11 +444,64 @@ class SecurityMiddleware:
 
 
 # --- CLI: python -m recons_orchestrator.security ------------------------------
+def _read_password(argv: list[str]) -> str | None:
+    """Prompt twice, or read one line from stdin with --password-stdin."""
+    import getpass
+    import sys
+
+    if "--password-stdin" in argv:
+        pw = sys.stdin.readline().rstrip("\r\n")
+    else:
+        pw = getpass.getpass("Dashboard operator password: ")
+        if pw != getpass.getpass("Repeat: "):
+            print("passwords do not match", file=sys.stderr)
+            return None
+    if len(pw) < 12:
+        print("use at least 12 characters", file=sys.stderr)
+        return None
+    return pw
+
+
+def set_operator(user: str, password: str) -> Path:
+    """Write the operator login into the shared secrets file (never the
+    plaintext). Used by vps-quickstart.sh; the orchestrator picks it up on
+    its next restart because the unit loads that file as its environment."""
+    from .config import Settings
+    from .secrets_store import SecretsStore
+
+    if not user or not user.strip():
+        raise ValueError("operator user must not be empty")
+    settings = Settings()
+    store = SecretsStore(settings.shared_secrets_env)
+    store.ensure_file()
+    store.set_many({
+        "RECONS_OPERATOR_USER": user.strip(),
+        "RECONS_OPERATOR_PASSWORD_HASH": hash_password(password),
+    })
+    return settings.shared_secrets_env
+
+
 def _cli(argv: list[str]) -> int:
     import getpass
     import sys
 
     cmd = argv[0] if argv else ""
+    if cmd == "set-operator":
+        user = ""
+        if "--user" in argv:
+            i = argv.index("--user")
+            user = argv[i + 1] if i + 1 < len(argv) else ""
+        user = user or os.environ.get("RECONS_OPERATOR_USER", "") or "operator"
+        pw = _read_password(argv)
+        if pw is None:
+            return 1
+        try:
+            path = set_operator(user, pw)
+        except (OSError, ValueError) as exc:
+            print(f"could not write the operator login: {exc}", file=sys.stderr)
+            return 1
+        print(f"operator '{user}' set in {path}; restart the orchestrator to apply")
+        return 0
     if cmd == "hash-password":
         pw = getpass.getpass("New operator password: ")
         again = getpass.getpass("Repeat: ")
@@ -463,7 +520,8 @@ def _cli(argv: list[str]) -> int:
         print(f"RECONS_PROXY_SECRET={secrets.token_urlsafe(32)}")
         return 0
     print("usage: python -m recons_orchestrator.security "
-          "{hash-password|session-secret|proxy-secret}", file=sys.stderr)
+          "{set-operator [--user NAME] [--password-stdin]|hash-password|session-secret|proxy-secret}",
+          file=sys.stderr)
     return 2
 
 

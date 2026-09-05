@@ -330,8 +330,44 @@ def test_spa_served_with_fallback_and_no_traversal(settings):
     assert c.get("/").headers["x-frame-options"] == "DENY"
 
 
-def test_spa_missing_build_is_a_clear_404(settings):
+def test_spa_missing_build_is_a_clear_503(settings):
     c = make_client(build_app(settings))
     r = c.get("/")
-    assert r.status_code == 404
-    assert "not built" in r.json()["detail"]
+    assert r.status_code == 503
+    assert "npm run build" in r.json()["detail"]
+
+
+# --- CLI: set-operator (what vps-quickstart.sh runs) ---------------------------
+def test_set_operator_writes_hash_never_plaintext(tmp_path, monkeypatch):
+    import io
+
+    from recons_orchestrator.security import _cli
+
+    monkeypatch.setenv("RECONS_ROOT", str(tmp_path / "recons"))
+    monkeypatch.setattr("sys.stdin", io.StringIO("correct horse battery staple\n"))
+    assert _cli(["set-operator", "--user", "tony", "--password-stdin"]) == 0
+    text = (tmp_path / "recons" / "shared" / "secrets.env").read_text()
+    assert "RECONS_OPERATOR_USER=tony" in text
+    assert "RECONS_OPERATOR_PASSWORD_HASH=$scrypt$" in text
+    assert "correct horse" not in text
+    assert ((tmp_path / "recons" / "shared" / "secrets.env").stat().st_mode & 0o777) == 0o600
+    # The written hash verifies, and short passwords are refused.
+    line = next(l for l in text.splitlines() if l.startswith("RECONS_OPERATOR_PASSWORD_HASH="))
+    assert verify_password("correct horse battery staple", line.split("=", 1)[1])
+    monkeypatch.setattr("sys.stdin", io.StringIO("short\n"))
+    assert _cli(["set-operator", "--user", "tony", "--password-stdin"]) == 1
+
+
+def test_session_secret_is_persisted_on_first_boot(tmp_path):
+    """No manual step: with no RECONS_SESSION_SECRET in the environment the app
+    mints one into the secrets file so sessions survive restarts."""
+    s = with_operator(Settings(root=tmp_path / "r", dashboard_dist=tmp_path / "d"))
+    s.session_secret = ""
+    build_app(s)
+    text = (tmp_path / "r" / "shared" / "secrets.env").read_text()
+    assert "RECONS_SESSION_SECRET=" in text and len(s.session_secret) >= 32
+    # A second boot reads the same value back rather than minting another.
+    s2 = with_operator(Settings(root=tmp_path / "r", dashboard_dist=tmp_path / "d"))
+    s2.session_secret = ""
+    build_app(s2)
+    assert s2.session_secret == s.session_secret

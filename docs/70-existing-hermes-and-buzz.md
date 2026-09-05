@@ -61,12 +61,58 @@ and both halves land in the Audit log tagged `agent → agent`.
 > Remember: the orchestrator regenerates `config.yaml` when the roster changes,
 > so re-apply this peer block after adding or deleting agents.
 
-### If you'd rather consolidate
+### If you'd rather consolidate: migrate it here
 
-You can migrate that instance onto the VPS instead: copy its `~/.hermes` into
-`/opt/recons/agents/<name>/home/`, add a roster entry, and let the orchestrator
-rewire the mesh. Its memory and history come with it. Peering is less disruptive;
-consolidating means one machine to keep patched.
+`scripts/migrate-hermes.sh` snapshot-copies the instance onto the VPS while the
+original **keeps running** — memory, history and (wherever Hermes stores it)
+its Telegram setup all ride along:
+
+```bash
+# Day 1 — the old machine stays primary; this just makes a copy here:
+./scripts/migrate-hermes.sh pull --from <old-machine-tailscale-name>
+
+# Whenever you want a fresher copy, and a health/drift report:
+./scripts/migrate-hermes.sh sync
+./scripts/migrate-hermes.sh status
+```
+
+The copy lands in `/opt/recons/agents/<id>/home` and is registered as an
+**imported** agent: chat and history work in the dashboard immediately, but it
+keeps its own config, gets no A2A peers, and no gateway unit is enabled here —
+so nothing on the VPS can grab a Telegram bot's single live connection while
+the old machine still serves it.
+
+Worth knowing while both copies are live:
+
+- **They diverge.** Chatting with the copy in the dashboard writes to the
+  copy's `state.db`; the next `sync` overwrites that (after a warning), saving
+  whatever it replaced under `agents/<id>/sync-backups/<stamp>/`.
+- **Credentials are not cloned by default.** `--auth shared` (the default)
+  symlinks this machine's auth store instead — two live machines refreshing
+  one OAuth token can invalidate each other. The final sync brings the
+  original `auth.json` across, when the old side is quiescent.
+- **Live databases are copied consistently** via remote `sqlite3 ".backup"`
+  when available (WAL-aware raw copy otherwise — accepted for interim
+  snapshots, required-stopped at cutover grade).
+- **Folders outside the home travel too.** `--also <remote-path>` copies
+  extra data directories (an Obsidian vault an MCP server reads, say) into
+  `agents/<id>/data/`, and the stamp repeats them on every later sync.
+  Promotion rewrites the old paths to the new location inside any captured
+  config blocks.
+
+When you're ready to move the Telegram bot here (and make the migrated agent
+the head of staff), that is the **cutover**: stop the old gateway, run
+`sync --final` and `cutover-check`, then `scripts/telegram-cutover.sh` — the
+ordered runbook is [35-telegram-cutover.md](35-telegram-cutover.md). One bot
+token supports exactly one live connection, so the old gateway is always
+stopped first. After promotion the agent is template-managed: the manual peer
+block above becomes obsolete for it, and `migrate-hermes.sh sync` refuses to
+overwrite it with stale old-machine state. Custom config blocks the template
+doesn't model survive promotion in `agents/<id>/config-extras.yaml` — the
+durable place for per-agent extras (extra A2A peers included), re-applied on
+every regeneration.
+
+Peering is less disruptive; consolidating means one machine to keep patched.
 
 ## Buzz by Block
 

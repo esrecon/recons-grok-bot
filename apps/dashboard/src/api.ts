@@ -4,17 +4,25 @@ import type {
   AuditFilters,
   ChatEvent,
   CredentialChange,
+  CredentialsResponse,
+  DiscoveredAgent,
+  ImageSettings,
+  ImproveField,
+  LoginSession,
+  ModelOption,
   NewAgentInput,
-  ProvidersResponse,
+  Provider,
   Routine,
   SecurityPosture,
   ServiceStatus,
   SessionDetail,
   SessionInfo,
   SessionSummary,
+  SetupStatus,
   Skill,
   SkillDetail,
   SkillFileContent,
+  TelegramStatus,
 } from "./types";
 
 // Single-origin client for the orchestrator (proxied to the mock server in dev).
@@ -95,6 +103,10 @@ function rememberSession(info: SessionInfo): SessionInfo {
   return info;
 }
 
+function enc(s: string): string {
+  return encodeURIComponent(s);
+}
+
 export const api = {
   // --- operator session -----------------------------------------------------
   async session(): Promise<SessionInfo> {
@@ -116,6 +128,31 @@ export const api = {
     }
   },
 
+  // --- setup + providers (connect a brain) ----------------------------------
+  setup(): Promise<SetupStatus> {
+    return request("/setup");
+  },
+
+  providers(): Promise<{ providers: Provider[] }> {
+    return request("/providers");
+  },
+
+  saveProviderKey(id: string, key: string): Promise<Provider> {
+    return request(`/providers/${enc(id)}/key`, { method: "PUT", json: { key } });
+  },
+
+  clearProviderKey(id: string): Promise<Provider> {
+    return request(`/providers/${enc(id)}/key`, { method: "DELETE" });
+  },
+
+  startProviderLogin(id: string): Promise<LoginSession> {
+    return request(`/providers/${enc(id)}/login`, { method: "POST" });
+  },
+
+  pollProviderLogin(loginId: string): Promise<LoginSession> {
+    return request(`/providers/login/${enc(loginId)}`);
+  },
+
   // --- agents ---------------------------------------------------------------
   listAgents(): Promise<Agent[]> {
     return request<Agent[]>("/agents");
@@ -129,6 +166,10 @@ export const api = {
     return request<Agent>(`/agents/${enc(id)}/${action}`, { method: "POST" });
   },
 
+  makeLead(id: string): Promise<Agent> {
+    return request<Agent>(`/agents/${enc(id)}/lead`, { method: "POST" });
+  },
+
   deleteAgent(id: string): Promise<void> {
     return request<void>(`/agents/${enc(id)}`, { method: "DELETE" });
   },
@@ -138,6 +179,88 @@ export const api = {
       method: "POST",
       json: { decision },
     });
+  },
+
+  getTelegram(id: string): Promise<TelegramStatus> {
+    return request(`/agents/${enc(id)}/telegram`);
+  },
+
+  setTelegram(
+    id: string,
+    input: { enabled: boolean; allowed_users?: string; token?: string },
+  ): Promise<Agent> {
+    return request(`/agents/${enc(id)}/telegram`, { method: "PUT", json: input });
+  },
+
+  updateAgent(
+    id: string,
+    patch: {
+      name?: string;
+      role?: string;
+      personality?: string;
+      avatar_color?: string;
+      model_provider?: string;
+      model_name?: string;
+    },
+  ): Promise<Agent> {
+    return request(`/agents/${enc(id)}`, { method: "PATCH", json: patch });
+  },
+
+  getSoul(id: string): Promise<{ content: string; exists: boolean }> {
+    return request(`/agents/${enc(id)}/soul`);
+  },
+
+  putSoul(id: string, content: string): Promise<{ content: string }> {
+    return request(`/agents/${enc(id)}/soul`, { method: "PUT", json: { content } });
+  },
+
+  improve(input: {
+    field: ImproveField;
+    text: string;
+    agent_context: { name: string; role: string };
+  }): Promise<{ text: string }> {
+    return request("/assist/improve", { method: "POST", json: input });
+  },
+
+  generateAvatar(id: string): Promise<Agent> {
+    return request(`/agents/${enc(id)}/avatar`, { method: "POST" });
+  },
+
+  avatarUrl(id: string, version: number): string {
+    return `${BASE}/agents/${enc(id)}/avatar?v=${version}`;
+  },
+
+  imageSettings(): Promise<ImageSettings> {
+    return request("/settings/image");
+  },
+
+  setImageSettings(input: { key?: string; base_url?: string; model?: string }): Promise<ImageSettings> {
+    return request("/settings/image", { method: "PUT", json: input });
+  },
+
+  models(): Promise<{ options: ModelOption[] }> {
+    return request("/models");
+  },
+
+  addCustomModel(input: {
+    label: string;
+    base_url: string;
+    model: string;
+    api_key: string;
+  }): Promise<{ model: { id: string } }> {
+    return request("/models/custom", { method: "POST", json: input });
+  },
+
+  deleteCustomModel(id: string): Promise<void> {
+    return request<void>(`/models/custom/${enc(id)}`, { method: "DELETE" }).then(() => undefined);
+  },
+
+  importCandidates(): Promise<{ candidates: DiscoveredAgent[] }> {
+    return request("/import/candidates");
+  },
+
+  importAgent(input: { home: string; name?: string; role?: string }): Promise<Agent> {
+    return request("/import", { method: "POST", json: input });
   },
 
   // --- audit ----------------------------------------------------------------
@@ -163,6 +286,10 @@ export const api = {
 
   sessionDetail(agent: string, sessionId: string): Promise<SessionDetail> {
     return request(`/sessions/${enc(agent)}/${enc(sessionId)}`);
+  },
+
+  history(agentId: string): Promise<{ messages: { role: string; text: string; ts_iso: string }[] }> {
+    return request(`/agents/${enc(agentId)}/history`);
   },
 
   // --- skills ---------------------------------------------------------------
@@ -217,9 +344,9 @@ export const api = {
     return request(`/routines/${enc(agent)}/${enc(id)}`, { method: "DELETE" });
   },
 
-  // --- settings -------------------------------------------------------------
-  providers(): Promise<ProvidersResponse> {
-    return request("/settings/providers");
+  // --- settings: credentials catalogue, posture, services -------------------
+  credentialStatus(): Promise<CredentialsResponse> {
+    return request("/settings/credentials");
   },
 
   // Write-only by design: the value goes up, only a status comes back.
@@ -247,14 +374,13 @@ export const api = {
     agentId: string,
     text: string,
     signal?: AbortSignal,
-    sessionId?: string | null,
   ): AsyncGenerator<ChatEvent> {
     const res = await fetch(
       `${BASE}/agents/${enc(agentId)}/messages`,
       buildInit({
         method: "POST",
         headers: { accept: "text/event-stream" },
-        json: { text, session_id: sessionId ?? null },
+        json: { text },
         signal,
       }),
     );
@@ -289,7 +415,3 @@ export const api = {
     }
   },
 };
-
-function enc(s: string): string {
-  return encodeURIComponent(s);
-}

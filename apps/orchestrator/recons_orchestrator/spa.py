@@ -38,9 +38,12 @@ def register_spa(app: FastAPI, settings: Settings) -> None:
         index = dist / "index.html"
         if not index.is_file():
             raise HTTPException(
-                status_code=404,
-                detail="dashboard not built: run `npm run build` in apps/dashboard and point "
-                       "RECONS_DASHBOARD_DIST at the dist directory",
+                status_code=503,
+                detail=(
+                    f"The dashboard is not built at {dist}. Build it with: "
+                    "cd apps/dashboard && npm ci && npm run build — then copy "
+                    "dist/ there, or point RECONS_DASHBOARD_DIST at it."
+                ),
             )
         target = _resolve(dist, path) if path else None
         if target is not None:

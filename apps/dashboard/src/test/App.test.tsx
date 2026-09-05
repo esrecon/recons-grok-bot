@@ -5,6 +5,7 @@ import type { Agent } from "../types";
 // Mock the API module so the shell can be tested without a backend.
 const listAgents = vi.fn();
 const createAgent = vi.fn();
+const setupFn = vi.fn();
 const session = vi.fn();
 const authListeners: ((s: "signed-out") => void)[] = [];
 vi.mock("../api", () => ({
@@ -14,21 +15,28 @@ vi.mock("../api", () => ({
     logout: vi.fn().mockResolvedValue(undefined),
     listAgents: () => listAgents(),
     createAgent: (input: unknown) => createAgent(input),
+    setup: () => setupFn(),
     setStatus: vi.fn(),
     deleteAgent: vi.fn(),
+    makeLead: vi.fn(),
     streamChat: vi.fn(),
+    history: vi.fn().mockResolvedValue({ messages: [] }),
     audit: vi.fn().mockResolvedValue({ events: [], count: 0 }),
     auditExportUrl: () => "/api/audit/export.jsonl",
     skills: vi.fn().mockResolvedValue({ shared: [], pending: [] }),
+    importCandidates: vi.fn().mockResolvedValue({ candidates: [] }),
+    importAgent: vi.fn(),
     routines: vi.fn().mockResolvedValue({ routines: [] }),
     sessions: vi.fn().mockResolvedValue({ sessions: [] }),
-    providers: vi.fn().mockResolvedValue({ providers: [], integrations: {}, restart_required: false }),
+    credentialStatus: vi.fn().mockResolvedValue({ providers: [], integrations: {}, restart_required: false }),
     services: vi.fn().mockResolvedValue({ services: [] }),
     securityPosture: vi.fn().mockResolvedValue({
       mode: "password", configured: true, operator: "tony", via: "password", cookie_secure: true,
       hsts: false, session_ttl_seconds: 43200, csrf_protection: true, allowed_origins: [],
       rate_limits: { login_per_minute: 10, api_per_minute: 600 },
     }),
+    imageSettings: vi.fn().mockResolvedValue({ key_set: false, base_url: "", model: "" }),
+    getTelegram: vi.fn().mockResolvedValue({ enabled: false, allowed_users: "", token_set: false, imported: false }),
   },
   onAuthChange: (fn: (s: "signed-out") => void) => {
     authListeners.push(fn);
@@ -37,12 +45,6 @@ vi.mock("../api", () => ({
 }));
 
 import { App } from "../App";
-
-const SIGNED_IN = {
-  authenticated: true, operator: "tony", via: "password", csrf_token: "t",
-  mode: "password", configured: true, reason: null,
-};
-const SIGNED_OUT = { ...SIGNED_IN, authenticated: false, operator: null, csrf_token: null };
 
 const RECON: Agent = {
   id: "recon",
@@ -55,12 +57,25 @@ const RECON: Agent = {
   created_at: "2026-08-15T12:00:00+00:00",
 };
 
+const SIGNED_IN = {
+  authenticated: true, operator: "tony", via: "password", csrf_token: "t",
+  mode: "password", configured: true, reason: null,
+};
+const SIGNED_OUT = { ...SIGNED_IN, authenticated: false, operator: null, csrf_token: null };
+
 describe("App shell", () => {
   beforeEach(() => {
     listAgents.mockReset();
     createAgent.mockReset();
     session.mockReset().mockResolvedValue(SIGNED_IN);
     authListeners.length = 0;
+    // Setup already complete, so these tests exercise the normal UI.
+    setupFn.mockReset().mockResolvedValue({
+      providers: [],
+      has_provider: true,
+      has_agents: true,
+      complete: true,
+    });
   });
 
   it("shows the login screen when there is no operator session", async () => {
@@ -71,6 +86,7 @@ describe("App shell", () => {
     expect(screen.queryByLabelText("Agents")).not.toBeInTheDocument();
     // Nothing else is fetched until we are signed in.
     expect(listAgents).not.toHaveBeenCalled();
+    expect(setupFn).not.toHaveBeenCalled();
   });
 
   it("drops back to the login screen when the session expires", async () => {
@@ -79,16 +95,6 @@ describe("App shell", () => {
     await screen.findByLabelText("Agents");
     authListeners.forEach((fn) => fn("signed-out"));
     expect(await screen.findByRole("button", { name: /sign in/i })).toBeInTheDocument();
-  });
-
-  it("navigates to sessions and settings", async () => {
-    listAgents.mockResolvedValue([RECON]);
-    render(<App />);
-    fireEvent.click(await screen.findByText("Sessions"));
-    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Settings"));
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
-    expect(await screen.findByText(/signed in as/i)).toBeInTheDocument();
   });
 
   it("renders the roster from the API", async () => {
@@ -142,5 +148,15 @@ describe("App shell", () => {
     expect(
       await screen.findByText(/every message, tool call and agent-to-agent/i),
     ).toBeInTheDocument();
+  });
+
+  it("navigates to sessions and settings", async () => {
+    listAgents.mockResolvedValue([RECON]);
+    render(<App />);
+    fireEvent.click(await screen.findByText("Sessions"));
+    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Settings"));
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(await screen.findByText(/signed in as/i)).toBeInTheDocument();
   });
 });

@@ -65,6 +65,7 @@ export function Sidebar({
               key={a.id}
               type="button"
               onClick={() => onSelectAgent(a.id)}
+              title={a.status === "error" ? a.status_detail || "Agent failed to start" : undefined}
               className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left ${
                 active ? "bg-surface-2" : "hover:bg-surface-2/60"
               }`}
@@ -75,6 +76,7 @@ export function Sidebar({
                 status={a.status}
                 title={a.name}
                 size={38}
+                imageVersion={a.avatar_version}
               />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-1.5">
@@ -100,6 +102,7 @@ export function Sidebar({
         <SideNavItem label="Sessions" icon="≡" active={view === "sessions"} onClick={() => onNavigate("sessions")} />
         <SideNavItem label="Skills" icon="◇" active={view === "skills"} onClick={() => onNavigate("skills")} />
         <SideNavItem label="Routines" icon="◷" active={view === "routines"} onClick={() => onNavigate("routines")} />
+        <SideNavItem label="Customize" icon="✎" active={view === "customize"} onClick={() => onNavigate("customize")} />
         <SideNavItem label="Audit log" icon="▦" active={view === "audit"} onClick={() => onNavigate("audit")} />
         <SideNavItem label="Settings" icon="⚙" active={view === "settings"} onClick={() => onNavigate("settings")} />
       </footer>

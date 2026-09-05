@@ -92,8 +92,9 @@ Don't drive the same Claude login from both Buzz and this stack simultaneously
 ### 13. Operator login is on, and locked-by-default
 Every `/api` route except the health check, the HMAC-verified webhook receiver
 and the auth endpoints needs an operator session. With no
-`RECONS_OPERATOR_PASSWORD_HASH` the API is **locked**, not open. Set it up in
-[10-vps.md](10-vps.md) §3b; `vps-verify.sh` fails if it's missing.
+`RECONS_OPERATOR_PASSWORD_HASH` the API is **locked**, not open. The quickstart
+sets it (`set-operator`, [10-vps.md](10-vps.md) §3b); `vps-verify.sh` fails if
+it's missing.
 *Why: a tailnet decides which devices can connect; it says nothing about who is
 holding the phone.*
 

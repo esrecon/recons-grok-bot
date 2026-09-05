@@ -33,15 +33,40 @@ check() {
 
 section "Listening sockets"
 if command -v ss >/dev/null; then
-  # Anything listening on a non-loopback address is a finding, unless it is the
-  # tailnet interface (Tailscale Serve terminates on loopback, so normally none).
-  EXPOSED=$(ss -tlnH 2>/dev/null | awk '{print $4}' \
-    | grep -Ev '^(127\.0\.0\.1|\[::1\]|localhost)' | grep -Ev '^\*?:(22)$' || true)
+  # Classify rather than lump together: the whole 127.0.0.0/8 range is loopback
+  # (systemd-resolved uses 127.0.0.53), and a socket bound to this machine's
+  # tailnet address is reachable only by your own devices — that is the intended
+  # access path, not a finding. What matters is anything on 0.0.0.0 / [::] / *.
+  EXPOSED=""
+  TAILNET=""
+  while read -r sock; do
+    [ -n "$sock" ] || continue
+    case "$sock" in
+      127.*|\[::1\]:*|localhost:*)
+        continue ;;                                    # loopback, any of /8
+      # Tailscale CGNAT range 100.64.0.0/10 and its IPv6 ULA prefix.
+      100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*|\[fd7a:115c:a1e0:*)
+        TAILNET="${TAILNET}${sock}"$'\n' ;;
+      *:22|*:22\ *)
+        continue ;;                                    # SSH, expected
+      *)
+        EXPOSED="${EXPOSED}${sock}"$'\n' ;;
+    esac
+  done <<EOF
+$(ss -tlnH 2>/dev/null | awk '{print $4}')
+EOF
+
+  if [ -n "$TAILNET" ]; then
+    info "bound to your tailnet address only (reachable by your devices):"
+    printf '       %s\n' "$(printf '%s' "$TAILNET" | tr -d '\r' | sed '/^$/d')"
+  fi
   if [ -z "$EXPOSED" ]; then
-    pass "no services listening on non-loopback addresses"
+    pass "nothing listening on a public interface"
   else
-    fail "these sockets are not loopback-bound:"
-    printf '       %s\n' "$EXPOSED"
+    fail "these sockets accept connections from any interface:"
+    printf '       %s\n' "$(printf '%s' "$EXPOSED" | sed '/^$/d')"
+    printf '       %s\n' "If any belong to other apps on this box, that is your call —" \
+                         "but the orchestrator (8330) and Hermes must never appear here."
   fi
 else
   info "ss not available; skipping socket check"
@@ -51,10 +76,19 @@ section "Firewall"
 if command -v ufw >/dev/null; then
   if ufw status 2>/dev/null | grep -q '^Status: active'; then
     pass "ufw active"
-    if ufw status 2>/dev/null | grep -q 'deny (incoming)'; then
+    # `ufw status` alone lists rules but not the defaults — only the verbose
+    # form prints "Default: deny (incoming), ...", so checking the short form
+    # reports a false failure on a correctly configured firewall.
+    if ufw status verbose 2>/dev/null | grep -q 'deny (incoming)'; then
       pass "default deny incoming"
     else
       fail "default incoming policy is not deny"
+    fi
+    # Docker publishes ports straight into iptables, below ufw's rules, so a
+    # container's -p 0.0.0.0:PORT is reachable regardless of what ufw says.
+    if command -v docker >/dev/null && docker ps --format '{{.Ports}}' 2>/dev/null | grep -q '0\.0\.0\.0'; then
+      info "docker publishes ports below ufw — containers bound to 0.0.0.0 stay"
+      info "reachable even with default-deny; bind them to 127.0.0.1 to close them"
     fi
   else
     fail "ufw is not active"
@@ -67,13 +101,30 @@ section "Tailscale"
 if command -v tailscale >/dev/null; then
   if tailscale status >/dev/null 2>&1; then
     pass "tailscale up"
-    if tailscale serve status 2>/dev/null | grep -q .; then
+    # "No serve config" is itself output, so testing for *any* text passes when
+    # nothing is published. Look for a real proxy target instead — note that
+    # turning funnel off clears the whole serve config, which is easy to miss.
+    SERVE_STATUS="$(tailscale serve status 2>/dev/null || true)"
+    if printf '%s' "$SERVE_STATUS" | grep -qiE '127\.0\.0\.1|proxy|https://'; then
       pass "tailscale serve configured (tailnet-only HTTPS)"
     else
-      info "no serve config yet — see docs/15-tailscale.md"
+      fail "nothing published to your tailnet — the dashboard is unreachable"
+      printf '       %s\n' \
+        "Publish it with:" \
+        "    tailscale serve --bg --https=443 http://127.0.0.1:8330" \
+        "(turning funnel off clears the serve config too, so re-run this after.)"
     fi
-    if tailscale funnel status 2>/dev/null | grep -qi 'funnel.*on\|https://'; then
+    # Funnel and serve share one status table; a serve-only config still prints
+    # the https:// URL (annotated "tailnet only"). Matching any URL therefore
+    # false-positived the moment serve was configured — the discriminator is the
+    # literal "Funnel on" annotation, which serve-only output never contains.
+    if tailscale serve status 2>/dev/null | grep -qi 'funnel on'; then
       fail "FUNNEL IS ON — this exposes the dashboard to the public internet"
+      printf '       %s\n' \
+        "Anyone who finds the URL can reach a panel that runs commands on this" \
+        "machine. Turn it off now:" \
+        "    tailscale funnel --https=443 off" \
+        "then confirm with: tailscale serve status"
     else
       pass "funnel off (never expose this publicly)"
     fi
@@ -148,6 +199,11 @@ for cfg in "$RECONS_ROOT"/agents/*/home/config.yaml; do
   check grep -qE 'host:[[:space:]]*127\.0\.0\.1' "$cfg" \
     -- "$NAME: A2A bound to loopback" \
     -- "$NAME: A2A host is not loopback"
+  # Outbound a2a_* tools are a default-off Hermes toolset; without this line
+  # the agent is "A2A connected" (inbound) but cannot call any peer.
+  check grep -q 'cli: \[hermes-cli, a2a\]' "$cfg" \
+    -- "$NAME: outbound A2A toolset enabled (cli)" \
+    -- "$NAME: platform_toolsets.cli lacks 'a2a' — no a2a_* tools in the manifest"
 done
 if [ "$FOUND" -eq 0 ]; then
   info "no agents provisioned yet"
@@ -161,6 +217,70 @@ for env in "$RECONS_ROOT"/agents/*/service.env; do
     info "$NAME: no peers yet (single-agent install)"
   fi
 done
+
+section "Orchestrator"
+# A service can crash-loop for hours while the dashboard still answers, because
+# an orphan process is holding the port. That state looks healthy from a browser
+# and is anything but: the orphan runs without the environment the unit
+# provides, so agent creation fails with a 500 that has no obvious cause.
+SCOPE_FILE="$RECONS_ROOT/systemd-scope"
+if [ -r "$SCOPE_FILE" ] && [ "$(cat "$SCOPE_FILE")" = "user" ]; then
+  SYSTEMCTL=(systemctl --user)
+else
+  SYSTEMCTL=(systemctl)
+fi
+
+# The same unit installed in BOTH scopes is exactly how this install ended up
+# with two orchestrators fighting over port 8330 — one crash-looping while the
+# other answered. Catch it by presence on disk, not by state.
+USER_UNIT="$HOME/.config/systemd/user/recons-orchestrator.service"
+SYS_UNIT="/etc/systemd/system/recons-orchestrator.service"
+if [ -f "$USER_UNIT" ] && [ -f "$SYS_UNIT" ]; then
+  fail "orchestrator unit installed in BOTH user and system scope"
+  printf '       %s\n' \
+    "The two instances will fight over port 8330. Keep the recorded scope" \
+    "($(cat "$RECONS_ROOT/systemd-scope" 2>/dev/null || echo unknown)) and remove the other unit file, then daemon-reload."
+fi
+
+if command -v systemctl >/dev/null; then
+  STATE="$("${SYSTEMCTL[@]}" is-active recons-orchestrator 2>/dev/null || true)"
+  case "$STATE" in
+    active)  pass "orchestrator service is running" ;;
+    activating)
+      fail "orchestrator is stuck restarting (not running)"
+      printf '       %s\n' \
+        "Almost always: something else already holds port 8330, so the service" \
+        "cannot bind and systemd retries forever. Find and clear it:" \
+        "    ss -tlnp | grep 8330" \
+        "    pkill -f 'uvicorn recons_orchestrator'" \
+        "    ${SYSTEMCTL[*]} restart recons-orchestrator"
+      ;;
+    *)       fail "orchestrator service is '${STATE:-unknown}'" ;;
+  esac
+
+  # Is the port owned by the service, or by something systemd doesn't manage?
+  # Not by pid equality: the unit's ExecStart launcher (`uv run`) may start
+  # uvicorn as a CHILD of MainPID, which is still the service. Same *cgroup*
+  # is the real test — an actual orphan (started by hand, or surviving a
+  # botched restart) lives outside the unit's cgroup.
+  MAINPID="$("${SYSTEMCTL[@]}" show -p MainPID --value recons-orchestrator 2>/dev/null || echo 0)"
+  PORTPID="$(ss -tlnpH 2>/dev/null | awk '/127\.0\.0\.1:8330/ {print $0}' \
+             | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 || true)"
+  if [ -n "$PORTPID" ] && [ "$MAINPID" != "0" ] && [ "$PORTPID" != "$MAINPID" ]; then
+    if grep -q "recons-orchestrator.service" "/proc/$PORTPID/cgroup" 2>/dev/null; then
+      : # the unit's own child (uv run → uvicorn) — that IS the service
+    else
+      fail "port 8330 is held by pid $PORTPID, outside the service (main pid $MAINPID)"
+      printf '       %s\n' "That orphan runs without the unit's environment — kill it and restart."
+    fi
+  fi
+fi
+
+if curl -fsS http://127.0.0.1:8330/api/health >/dev/null 2>&1; then
+  pass "orchestrator answering on 127.0.0.1:8330"
+else
+  fail "orchestrator is not answering on 127.0.0.1:8330"
+fi
 
 section "Hermes version"
 if command -v hermes >/dev/null; then

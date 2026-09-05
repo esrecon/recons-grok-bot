@@ -29,22 +29,34 @@ provable — if a box won't tick, the runbook section is named beside it.
 - [ ] One `shared/secrets.env` (chmod 600) serves all agents — no per-agent copies *(60-security)*
 - [ ] Two agents do **not** see each other's conversation history *(50-agents-a2a)*
 
-## D. Providers
+## D. Providers — all connected from the app
 
+- [ ] On a fresh install the dashboard opens the **setup screen**, not an empty
+      roster *(10-vps)*
+- [ ] Pasting a Nous key in the app flips the card to **Connected** *(10-vps)*
+- [ ] *Sign in with ChatGPT* shows a link and code **in the app**, and the card
+      flips to Connected after you finish in the browser *(40-providers)*
+- [ ] Reloading the page never shows a stored key back — only "Connected" *(40-providers)*
+- [ ] You never had to edit a file on the VPS to get here *(10-vps)*
 - [ ] The lead agent answers on Claude via the wrapper *(40-providers)*
 - [ ] Another agent answers on the ChatGPT subscription *(40-providers)*
 - [ ] A bulk agent answers on Nous Portal *(40-providers)*
 - [ ] **Failover drill:** `systemctl --user stop claude-wrapper` → the lead agent
       still answers via its fallback *(40-providers)*
-- [ ] **Exit drill:** switch the lead tier to `anthropic` + API key, restart,
-      confirm it answers, then switch back *(40-providers)*
+- [ ] **Exit drill:** paste a Claude Console API key in Settings, confirm the lead
+      agent still answers, then disconnect it *(40-providers)*
 
 ## E. Agents talk, and you can see it
 
 - [ ] Ask the lead to delegate to another agent; you get an answer back *(50-agents-a2a)*
+- [ ] `hermes chat --list-tools` with an agent's `HERMES_HOME` lists the five
+      `a2a_*` tools *(50-agents-a2a)*
 - [ ] The Audit log shows both halves as `A → B` and `B → A` *(Audit tab)*
 - [ ] The **Agent-to-agent only** filter shows exactly those exchanges *(Audit tab)*
 - [ ] An A2A call with a wrong bearer token is rejected *(50-agents-a2a)*
+- [ ] A tokenless `POST` to an agent's A2A port returns `401` *(50-agents-a2a)*
+- [ ] The lead's **mailbox health check** on the email agent returns the JSON
+      contract, secret-free — or an honest `not_configured` *(50-agents-a2a)*
 - [ ] Export downloads the full JSONL transcript *(Audit tab)*
 
 ## F. The real PC

@@ -90,12 +90,12 @@ else
 fi
 
 section "Secret scan (literal keys must never be committed)"
-# Text files only: bytecode caches and virtualenvs are build products (and
-# validate-configs.py skips them the same way).
-if grep -rEnI --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
-    --exclude-dir=__pycache__ --exclude-dir=.venv --exclude-dir=.pytest_cache \
-    --exclude-dir=test-results --exclude-dir=playwright-report \
-    'sk-ant-[A-Za-z0-9_-]{8,}|sk-proj-[A-Za-z0-9_-]{8,}|sk-oat[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16}' . ; then
+# Scan what git actually tracks — "committed" is the thing we care about, and it
+# keeps build artifacts (.pyc, dist, venvs) from producing false positives.
+if git ls-files -z 2>/dev/null \
+  | xargs -0 -r grep -EnI \
+      'sk-ant-[A-Za-z0-9_-]{8,}|sk-proj-[A-Za-z0-9_-]{8,}|sk-oat[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16}|\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b'
+then
   echo "   FOUND literal secret-shaped strings above"
   FAILED=1
 else

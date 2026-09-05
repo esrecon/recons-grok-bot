@@ -8,11 +8,25 @@ import { Composer } from "./Composer";
 let counter = 0;
 const nextId = () => `m${Date.now()}-${counter++}`;
 
-// The conversation column: header pill (avatar + name + agent menu), the
-// message list, and the composer. Streams assistant replies token-by-token
-// through the orchestrator; approval cards post the decision back the same way.
-export function ChatView({ agent, onChanged }: { agent: Agent; onChanged?: () => void }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+// Survives unmounts: navigating to Skills/Audit and back must not wipe an
+// in-flight conversation. Keyed by agent id; server history remains the
+// durable record underneath.
+const threadCache = new Map<string, ChatMessage[]>();
+
+// The conversation column: header pill (avatar + name + head-of-staff control
+// + agent menu), the message list, and the composer. Streams assistant replies
+// token-by-token through the orchestrator; approval cards record the decision
+// the same way.
+export function ChatView({
+  agent,
+  onChanged,
+}: {
+  agent: Agent;
+  onChanged?: () => void;
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => threadCache.get(agent.id) ?? [],
+  );
   const [streaming, setStreaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -20,12 +34,37 @@ export function ChatView({ agent, onChanged }: { agent: Agent; onChanged?: () =>
   const scrollRef = useRef<HTMLDivElement>(null);
   const paused = agent.status === "paused";
 
-  // Reset the thread when switching agents (history lives in Sessions).
+  // On agent switch: show the cached in-memory thread instantly, then load the
+  // durable history from the agent's own state.db. History wins when it is
+  // longer (it includes turns finished after we navigated away).
   useEffect(() => {
-    setMessages([]);
+    setMessages(threadCache.get(agent.id) ?? []);
     setMenuOpen(false);
     setConfirmRemove(false);
+    let live = true;
+    api
+      .history(agent.id)
+      .then((h) => {
+        if (!live || h.messages.length === 0) return;
+        const loaded: ChatMessage[] = h.messages.map((m) => ({
+          id: nextId(),
+          role: m.role === "user" ? "user" : "assistant",
+          text: m.text,
+        }));
+        setMessages((cur) => (loaded.length >= cur.length ? loaded : cur));
+      })
+      .catch(() => {
+        /* no history endpoint or no db yet — the cached thread stands */
+      });
+    return () => {
+      live = false;
+    };
   }, [agent.id]);
+
+  // Mirror every change into the cache so unmounting loses nothing.
+  useEffect(() => {
+    threadCache.set(agent.id, messages);
+  }, [agent.id, messages]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -78,9 +117,12 @@ export function ChatView({ agent, onChanged }: { agent: Agent; onChanged?: () =>
                   },
                 };
               case "error":
+                // Server-side detail beats a generic failure line: it names
+                // the command that failed and how to fix it.
                 return {
                   ...msg,
-                  text: msg.text ? `${msg.text}\n⚠ ${ev.message}` : `⚠ ${ev.message}`,
+                  text: (msg.text ? msg.text + "\n" : "") + `⚠ ${ev.message}`,
+                  pending: false,
                 };
               default:
                 return msg;
@@ -114,7 +156,20 @@ export function ChatView({ agent, onChanged }: { agent: Agent; onChanged?: () =>
       await api.decideApproval(agent.id, id, decision);
       system(decision === "approve" ? "You approved the action." : "You denied the action.");
     } catch (e) {
-      system(`Couldn't deliver your decision: ${e instanceof Error ? e.message : "unknown error"}`);
+      system(`Couldn't record your decision: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
+  }
+
+  async function promoteToLead() {
+    const ok = window.confirm(
+      `Make ${agent.name} head of staff? The current lead steps down, and every agent's managed "Your team" section is updated.`,
+    );
+    if (!ok) return;
+    try {
+      await api.makeLead(agent.id);
+      onChanged?.();
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : "Could not change the lead.");
     }
   }
 
@@ -144,11 +199,32 @@ export function ChatView({ agent, onChanged }: { agent: Agent; onChanged?: () =>
   return (
     <section className="flex h-full flex-1 flex-col bg-bg">
       <header className="relative flex items-center justify-between border-b border-hairline px-4 py-2.5">
-        <div className="flex items-center gap-2 rounded-full bg-surface px-2.5 py-1">
-          <BotAvatar id={agent.id} color={agent.avatar_color} size={26} title={agent.name} />
-          <span className="text-[15px] font-semibold text-text-primary">
-            {agent.name}
-          </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex items-center gap-2 rounded-full bg-surface px-2.5 py-1">
+            <BotAvatar
+              id={agent.id}
+              color={agent.avatar_color}
+              size={26}
+              title={agent.name}
+              imageVersion={agent.avatar_version}
+            />
+            <span className="text-[15px] font-semibold text-text-primary">
+              {agent.name}
+            </span>
+          </div>
+          {agent.is_lead ? (
+            <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium uppercase text-text-secondary">
+              head of staff
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={promoteToLead}
+              className="shrink-0 text-[12px] text-text-secondary hover:text-text-primary"
+            >
+              Make head of staff
+            </button>
+          )}
         </div>
         <button
           type="button"
@@ -168,14 +244,20 @@ export function ChatView({ agent, onChanged }: { agent: Agent; onChanged?: () =>
             role="menu"
             className="absolute right-3 top-12 z-30 w-56 rounded-card bg-bg p-1.5 shadow-xl ring-1 ring-hairline"
           >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => setStatus(paused ? "resume" : "pause")}
-              className="block w-full rounded-lg px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-2"
-            >
-              {paused ? "Resume agent" : "Pause agent"}
-            </button>
+            {agent.imported ? (
+              <p className="px-3 py-2 text-[12px] text-text-secondary">
+                Imported — its gateway runs outside this platform until promoted.
+              </p>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => setStatus(paused ? "resume" : "pause")}
+                className="block w-full rounded-lg px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-2"
+              >
+                {paused ? "Resume agent" : "Pause agent"}
+              </button>
+            )}
             {!confirmRemove ? (
               <button
                 type="button"
@@ -210,7 +292,13 @@ export function ChatView({ agent, onChanged }: { agent: Agent; onChanged?: () =>
         {messages.length === 0 && (
           <div className="grid h-full place-items-center text-center">
             <div>
-              <BotAvatar id={agent.id} color={agent.avatar_color} size={64} title={agent.name} />
+              <BotAvatar
+                id={agent.id}
+                color={agent.avatar_color}
+                size={64}
+                title={agent.name}
+                imageVersion={agent.avatar_version}
+              />
               <p className="mt-3 text-[15px] font-semibold text-text-primary">
                 {agent.name}
               </p>

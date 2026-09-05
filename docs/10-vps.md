@@ -10,6 +10,56 @@ The always-on machine that hosts the agents, the dashboard, and the audit ledger
 - SSH access with a key.
 - Your Tailscale account.
 
+---
+
+## The short way
+
+Two commands. Everything else — API keys, ChatGPT sign-in, creating agents —
+happens **in the app**, not here.
+
+```bash
+# Clone, or update an existing checkout — safe to re-run.
+git clone https://github.com/esrecon/recons-grok-bot /opt/recons/app 2>/dev/null \
+  || git -C /opt/recons/app pull --ff-only
+sudo /opt/recons/app/scripts/vps-quickstart.sh
+```
+
+Both commands are idempotent: if a previous attempt got partway, running them
+again picks up where it left off rather than starting over.
+
+**Two things to expect during step 3.** It downloads roughly 200 MB — Hermes
+installs its own browser (Playwright Chromium) so your agents can use real
+websites. Then Hermes's installer asks how to set itself up:
+
+```
+How would you like to set up Hermes?
+  1. Quick Setup (Nous Portal) — free OAuth login, no API keys  (recommended)
+  2. Full setup — configure every provider, tool & option yourself
+  3. Blank Slate — everything off except the bare minimum
+```
+
+**Choose 1.** It signs you into Nous Portal for free and finishes in seconds.
+Option 2 walks you through configuring every provider in the terminal, which is
+exactly what the dashboard's setup screen does — you would be doing the same job
+twice, in the harder place.
+
+It installs the packages, sets the firewall to default-deny, joins your tailnet
+(you'll get a sign-in link), installs Hermes and the service units, builds the
+dashboard, **asks you to choose the dashboard operator password** (hashed on the
+machine, never stored — set `RECONS_OPERATOR_PASSWORD` to script it), starts the
+orchestrator, publishes it privately over HTTPS, and runs the security check. It
+finishes by printing your URL.
+
+Open that URL on any device on your tailnet and the app walks you through the
+rest. **You should not need to come back to this terminal.**
+
+If a step fails, or you'd rather do it piece by piece, the long way is below —
+it's the same work, spelled out.
+
+---
+
+## The long way
+
 ## 1. System prep
 
 Clone this repo onto the VPS, then:
@@ -51,48 +101,41 @@ sudo loginctl enable-linger "$USER"
 > before running it. Pin **≥ v0.20.1** — earlier versions carry patched CVEs
 > (see [60-security-hardening.md](60-security-hardening.md)).
 
-## 3. Fill in the secrets
+## 3. Secrets — nothing to do
 
-Edit `/opt/recons/shared/secrets.env` (it stays chmod 600). Every agent reads
-this one file, so a key added here is available to all of them.
+There is no file to edit. The orchestrator creates
+`/opt/recons/shared/secrets.env` (chmod 600) on first boot and generates the
+audit signing secret itself — that one is an internal secret between Hermes and
+the ledger, not an account credential, so you should never have to run
+`openssl rand` by hand.
 
-```bash
-# Generate the webhook signing secret:
-openssl rand -hex 32
-```
-
-Set `RECONS_WEBHOOK_SECRET` to that value — the audit ledger verifies every
-event Hermes sends against it. Provider keys are covered in
-[40-providers-and-tos.md](40-providers-and-tos.md); you can start with just Nous
-Portal and add the rest later.
+Provider keys and logins are entered **in the app** (step 8), not here.
 
 ## 3b. Set the operator login
 
-The dashboard and its API are **locked until an operator credential exists**
-— there is no anonymous mode, even on the tailnet. Generate both values on the
-VPS (never type a plaintext password into the file):
+The dashboard and its API are **locked until an operator credential exists** —
+there is no anonymous mode, even on the tailnet. The quickstart does this for
+you; on the long way, run it once the orchestrator's venv exists (step 6):
 
 ```bash
 cd /opt/recons/app/apps/orchestrator
-uv run python -m recons_orchestrator.security session-secret   # prints RECONS_SESSION_SECRET=…
-uv run python -m recons_orchestrator.security hash-password    # prompts twice, prints RECONS_OPERATOR_PASSWORD_HASH=…
+RECONS_ROOT=/opt/recons uv run --frozen python -m recons_orchestrator.security set-operator --user tony
 ```
 
-Paste each printed line over its placeholder in `/opt/recons/shared/secrets.env`
-and set `RECONS_OPERATOR_USER` to the name you will sign in with. The password
-itself is never stored; rotating `RECONS_SESSION_SECRET` signs every browser out.
+It prompts twice, writes `RECONS_OPERATOR_USER` and a scrypt
+`RECONS_OPERATOR_PASSWORD_HASH` into `/opt/recons/shared/secrets.env`, and the
+orchestrator picks them up on its next (re)start. The password itself is never
+stored. The session-signing secret is generated on first boot; rotating
+`RECONS_SESSION_SECRET` in that file signs every browser out. Change the
+password any time by running the same command again and restarting.
 
-## 4. Providers
+## 4. Providers — in the app
 
-Follow [40-providers-and-tos.md](40-providers-and-tos.md) now, at least far
-enough to have one working provider. The short version:
-
-```bash
-hermes model          # pick "ChatGPT or Codex Subscription" → device-code login
-```
-
-That gives you the workhorse tier. Claude (lead tier) needs the wrapper service;
-Nous needs an API key in `secrets.env`.
+Skip ahead. Once the dashboard is up, its setup screen connects your providers:
+paste a Nous key, sign in with your ChatGPT subscription (the link and code
+appear in the app), and optionally add Claude. The background on each — and the
+honest terms-of-service position — is in
+[40-providers-and-tos.md](40-providers-and-tos.md).
 
 ## 5. Build the dashboard
 
@@ -129,11 +172,21 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8330/api/agents   # 40
 
 Go to **[15-tailscale.md](15-tailscale.md)**, then come back.
 
-## 8. Create your first agents
+## 8. Connect providers and create your first agents
 
-Open the dashboard, sign in with the operator login from §3b, click **+**, and
-give the first agent a name and a one-line job. The first agent you create
-becomes the **lead**.
+Open the dashboard and sign in with the operator login from §3b. On a fresh
+install it then opens a two-step setup screen:
+
+1. **Connect a brain.** Paste a Nous API key, and/or click *Sign in with
+   ChatGPT* — the verification link and code appear right there, and the card
+   flips to **Connected** when you finish in the browser. Claude is optional and
+   can wait.
+2. **Hire your first teammate.** Name and a one-line job. The first agent you
+   create becomes the **lead**.
+
+Keys you enter are written to the shared secrets file by the server and are
+never shown again — the app only ever tells you whether a provider is connected.
+You can change providers later under **Settings**.
 
 Behind that one click, the orchestrator:
 
@@ -167,7 +220,7 @@ Docker, and A2A is loopback-bound with tokens.
 |---|---|
 | Agent won't start | `journalctl --user -u hermes-gateway@<id> -n 50` |
 | Dashboard 502 / blank | Is `recons-orchestrator` running? Is `RECONS_DASHBOARD_DIST` right? |
-| Dashboard says "operator login is not configured" | §3b — `RECONS_OPERATOR_USER` / `RECONS_OPERATOR_PASSWORD_HASH` missing from `secrets.env` |
+| Dashboard says "operator login is not configured" | §3b — run `set-operator`, then restart the orchestrator |
 | Every save fails with "cross-site request blocked" | A proxy rewrote `Host`/`Origin`; set `RECONS_ALLOWED_ORIGINS` (docs/65) |
 | A key set in Settings has no effect | Agents read `secrets.env` at start — pause/resume the agent (or restart its unit) |
 | Agent dies after logout | `sudo loginctl enable-linger $USER` |

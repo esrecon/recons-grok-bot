@@ -37,8 +37,8 @@ transcript of every exchange** — and reach your phone as an installable PWA ov
 
 | Path | What it is |
 |---|---|
-| `apps/dashboard/` | The Grok Bot-style web UI (React + Vite + Tailwind, installable PWA): operator sign-in, agent roster, chat, **Sessions**, Skills (with a read-only inspector), Routines, **Audit** (incl. operator actions), **Settings** (providers, write-only credentials, service health, security posture), one-click **New agent** |
-| `apps/orchestrator/` | FastAPI service: operator login + sessions + CSRF + rate limits + security headers, one-click agent provisioning (Hermes profiles), chat proxy (SSE ⇄ A2A), credentials store over `shared/secrets.env`, merged audit ledger + operator audit + signed-webhook receiver, serves the SPA |
+| `apps/dashboard/` | The Grok Bot-style web UI (React + Vite + Tailwind, installable PWA): operator sign-in, first-run setup, agent roster, chat, **Sessions**, Skills (with a read-only inspector), Routines, Customize, **Audit** (incl. operator actions), **Settings** (providers, write-only credentials, service health, security posture), one-click **New agent** |
+| `apps/orchestrator/` | FastAPI service: operator login + sessions + CSRF + rate limits + security headers, one-click agent provisioning (Hermes profiles), chat via the Hermes CLI (SSE), provider sign-in flows, credentials over `shared/secrets.env`, merged audit ledger + operator audit + signed-webhook receiver, serves the SPA |
 | `config/` | Profile templates (config.yaml, SOUL.md skeleton), A2A peer map, systemd units, shared skills/secrets layout |
 | `scripts/` | `vps-bootstrap.sh`, `vps-verify.sh`, backup/restore/update, `check-all.sh` (CI entrypoint) |
 | `tools/teach-mode/` | Workflow-demonstration → skill drafting helpers (`/learn` structure, `validate_skill.py`, guardrails) |
@@ -70,15 +70,26 @@ August 2026) live in [docs/00-research-report.md](docs/00-research-report.md).
 
 ## Quick start
 
+On an Ubuntu 24.04 VPS:
+
 ```bash
-sudo ./scripts/vps-bootstrap.sh      # system prep: firewall, docker, tailscale
-./scripts/vps-bootstrap.sh --user    # hermes, uv, systemd units, secrets file
-sudo tailscale up && sudo tailscale serve --bg --https=443 http://127.0.0.1:8330
-./scripts/vps-verify.sh              # prove nothing is exposed
+# Clone, or update an existing checkout — safe to re-run.
+git clone https://github.com/esrecon/recons-grok-bot /opt/recons/app 2>/dev/null \
+  || git -C /opt/recons/app pull --ff-only
+sudo /opt/recons/app/scripts/vps-quickstart.sh
 ```
 
-Set the operator login (docs/10 §3b), then open `https://<your-magicdns-name>/`,
-sign in, and click **+** to hire your first agent.
+That's the whole server-side install — packages, firewall, Tailscale, Hermes, the
+orchestrator, the dashboard, and a private HTTPS address on your tailnet. It
+prints your URL when it's done.
+
+The quickstart also asks you to choose the **operator password** for the
+dashboard (hashed on the server, never stored). **Everything after that happens
+in the app**: sign in, connect a model provider (paste a key, or sign in with
+your ChatGPT subscription — the link and code appear in the app), then create
+your first agent. No config files, no keys in the terminal.
+
+On your phone: install Tailscale, open the same URL in Chrome, tap **Install app**.
 
 ## Development
 

@@ -12,6 +12,8 @@ vi.mock("../api", () => ({
     decideApproval: (a: string, id: string, d: string) => decideApproval(a, id, d),
     setStatus: (id: string, action: string) => setStatus(id, action),
     deleteAgent: (id: string) => deleteAgent(id),
+    makeLead: vi.fn(),
+    history: vi.fn().mockResolvedValue({ messages: [] }),
   },
 }));
 

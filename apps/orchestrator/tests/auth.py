@@ -46,6 +46,13 @@ def make_client(app) -> TestClient:
     return TestClient(app, base_url="https://testserver")
 
 
+def authed_client(app) -> TestClient:
+    """make_client + login: for tests that build their own app."""
+    c = make_client(app)
+    login(c)
+    return c
+
+
 def login(client: TestClient, user: str = TEST_USER, password: str = TEST_PASSWORD) -> str:
     resp = client.post("/api/auth/login", json={"username": user, "password": password})
     assert resp.status_code == 200, resp.text

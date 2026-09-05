@@ -31,7 +31,10 @@ test.describe("phone", () => {
     await page.getByRole("button", { name: /Sessions$/ }).click();
     await page.getByRole("button", { name: /Agents$/ }).click();
     await page.getByText("Settings").click();
-    await expect(page.getByTestId("provider-nous").getByText("Configured")).toBeVisible();
+    await expect(page.getByTestId("provider-nous").getByText("Connected")).toBeVisible();
+    // State-independent: another project may already have set a wrapper key
+    // on the shared mock, so assert the card, not a particular pill.
+    await expect(page.getByTestId("provider-claude_wrapper").getByText("Claude (wrapper)")).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
   });
 

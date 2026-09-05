@@ -1,197 +1,310 @@
-"""Live chat: the orchestrator streams a turn to the browser as SSE through a
-pluggable ChatClient. Production talks A2A to the agent's loopback port with
-an orchestrator-only edge token; tests use a fake client and a mocked
-transport. Approval decisions travel the same way and are audited."""
+"""Chat backend tests — the bridge between the chat pane and the Hermes CLI.
+
+Real Hermes isn't present in CI, so the command template is pointed at stub
+executables. What's under test is the contract: output streams as tokens, the
+agent's own HERMES_HOME is used, failures carry the command and the override
+hint, and message text can never be interpreted as shell or options.
+"""
 
 from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 
-from recons_orchestrator.chat import (
-    A2AChatClient,
-    a2a_result_to_events,
-    parse_sse,
-)
-from recons_orchestrator.models import AgentRecord, AgentSpec, AgentStatus
+from recons_orchestrator.chat import ChatBackend, chat_command
+from recons_orchestrator.config import Settings
+from recons_orchestrator.models import AgentRecord, ModelTier
+from recons_orchestrator.provisioning import Provisioner
+from recons_orchestrator.services import RecordingServiceManager
 
-from tests.auth import build_app, login, make_client
-
-
-# --- mesh: the orchestrator is a caller ---------------------------------------
-def test_mesh_mints_orchestrator_edge_tokens(provisioner, settings):
-    provisioner.create_agent(AgentSpec(name="Recon", role="x"))
-    tokens = json.loads((settings.shared_dir / "a2a-tokens.json").read_text())
-    tok = tokens["orchestrator->recon"]
-    env = settings.service_env("recon").read_text()
-    assert f"orchestrator:{tok}" in env
-    # Stable across rewires; pruned with the agent.
-    provisioner.create_agent(AgentSpec(name="Scout", role="x"))
-    assert json.loads((settings.shared_dir / "a2a-tokens.json").read_text())["orchestrator->recon"] == tok
-    provisioner.remove_agent("recon")
-    tokens = json.loads((settings.shared_dir / "a2a-tokens.json").read_text())
-    assert "orchestrator->recon" not in tokens
-    assert "orchestrator->scout" in tokens
+from tests.auth import authed_client, build_app, make_client, with_operator
 
 
-# --- A2A event mapping (VERIFY against the installed Hermes) -------------------
-def test_map_message_parts_to_tokens():
-    res = {"kind": "message", "role": "agent",
-           "parts": [{"kind": "text", "text": "Hello "}, {"kind": "text", "text": "world"}]}
-    assert a2a_result_to_events(res) == [
-        {"type": "token", "text": "Hello "}, {"type": "token", "text": "world"},
-    ]
-
-
-def test_map_status_update_and_final():
-    res = {"kind": "status-update", "final": True,
-           "status": {"state": "completed",
-                      "message": {"parts": [{"kind": "text", "text": "done."}]}}}
-    assert a2a_result_to_events(res) == [{"type": "token", "text": "done."}, {"type": "done"}]
-
-
-def test_map_input_required_to_approval():
-    res = {"kind": "status-update", "taskId": "t-9",
-           "status": {"state": "input-required",
-                      "message": {"parts": [{"kind": "text", "text": "Send the email?"}]}}}
-    ev = a2a_result_to_events(res)
-    assert ev[0]["type"] == "approval"
-    assert ev[0]["id"] == "t-9"
-    assert "Send the email?" in ev[0]["body"]
-
-
-def test_map_failed_state_to_error():
-    res = {"kind": "status-update", "final": True, "status": {"state": "failed"}}
-    assert a2a_result_to_events(res) == [{"type": "error", "message": "agent reported failure"},
-                                         {"type": "done"}]
-
-
-def test_parse_sse_frames():
-    raw = "event: x\ndata: {\"a\": 1}\n\n: keepalive\n\ndata: {\"b\":\ndata: 2}\n\n"
-    assert list(parse_sse(raw.splitlines())) == [{"a": 1}, {"b": 2}]
-
-
-# --- the A2A client against a mocked transport ---------------------------------
-def _agent(port=9900):
-    return AgentRecord(id="recon", name="Recon", role="x", a2a_port=port,
-                       created_at="2026-08-15T12:00:00+00:00")
-
-
-async def test_a2a_client_streams_and_authenticates(settings):
-    settings.shared_dir.mkdir(parents=True)
-    (settings.shared_dir / "a2a-tokens.json").write_text(json.dumps({"orchestrator->recon": "tok-orch"}))
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["auth"] = request.headers.get("authorization")
-        seen["url"] = str(request.url)
-        seen["body"] = json.loads(request.content)
-        body = (
-            'data: {"jsonrpc":"2.0","id":1,"result":{"kind":"message","role":"agent",'
-            '"parts":[{"kind":"text","text":"Hi"}]}}\n\n'
-            'data: {"jsonrpc":"2.0","id":1,"result":{"kind":"status-update","final":true,'
-            '"status":{"state":"completed"}}}\n\n'
-        )
-        return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
-
-    client = A2AChatClient(settings, transport=httpx.MockTransport(handler))
-    events = [e async for e in client.stream(_agent(), "hello there")]
-    assert events == [{"type": "token", "text": "Hi"}, {"type": "done"}]
-    assert seen["auth"] == "Bearer tok-orch"
-    assert seen["url"] == "http://127.0.0.1:9900/"
-    assert seen["body"]["method"] == "message/stream"
-    assert seen["body"]["params"]["message"]["parts"][0]["text"] == "hello there"
-
-
-async def test_a2a_client_reports_unreachable_agent(settings):
-    settings.shared_dir.mkdir(parents=True)
-    (settings.shared_dir / "a2a-tokens.json").write_text(json.dumps({"orchestrator->recon": "tok-orch"}))
-
-    def handler(request):
-        raise httpx.ConnectError("refused")
-
-    client = A2AChatClient(settings, transport=httpx.MockTransport(handler))
-    events = [e async for e in client.stream(_agent(), "hi")]
-    assert events[0]["type"] == "error" and "unreachable" in events[0]["message"]
-    assert events[-1] == {"type": "done"}
-
-
-async def test_a2a_client_missing_token_is_an_error_not_a_crash(settings):
-    client = A2AChatClient(settings, transport=httpx.MockTransport(lambda r: httpx.Response(200)))
-    events = [e async for e in client.stream(_agent(), "hi")]
-    assert events[0]["type"] == "error" and "token" in events[0]["message"]
-
-
-# --- API -------------------------------------------------------------------------
-class FakeChatClient:
-    def __init__(self):
-        self.calls = []
-        self.decisions = []
-
-    async def stream(self, agent, text, *, session_id=None):
-        self.calls.append((agent.id, text, session_id))
-        yield {"type": "tool_call", "name": "browser_navigate"}
-        yield {"type": "token", "text": "On it: " + text}
-        yield {"type": "done"}
-
-    async def decide(self, agent, approval_id, decision):
-        self.decisions.append((agent.id, approval_id, decision))
+def _record(tmp_path, agent_id="sophie") -> AgentRecord:
+    return AgentRecord(
+        id=agent_id, name=agent_id.title(), role="x", tier=ModelTier.WORKHORSE,
+        a2a_port=9900, created_at="2026-08-16T10:00:00+00:00",
+    )
 
 
 @pytest.fixture
+def settings(tmp_path) -> Settings:
+    return with_operator(Settings(root=tmp_path / "recons", dashboard_dist=tmp_path / "d"))
+
+
+# --- command template ---------------------------------------------------------
+def test_default_command_appends_text_via_placeholder(monkeypatch):
+    monkeypatch.delenv("RECONS_CHAT_CMD", raising=False)
+    assert chat_command("hello world") == ["hermes", "-z", "hello world"]
+
+
+def test_text_is_one_argv_element_never_shell(monkeypatch):
+    monkeypatch.delenv("RECONS_CHAT_CMD", raising=False)
+    hostile = "hello; rm -rf / && echo $(whoami) | tee x"
+    argv = chat_command(hostile)
+    assert argv == ["hermes", "-z", hostile]  # intact, unsplit, uninterpreted
+
+
+def test_custom_template_honoured(monkeypatch):
+    monkeypatch.setenv("RECONS_CHAT_CMD", "hermes run --prompt {text} --json")
+    assert chat_command("hi") == ["hermes", "run", "--prompt", "hi", "--json"]
+
+
+def test_template_without_placeholder_appends(monkeypatch):
+    monkeypatch.setenv("RECONS_CHAT_CMD", "hermes ask")
+    assert chat_command("hi") == ["hermes", "ask", "hi"]
+
+
+# --- streaming ----------------------------------------------------------------
+def test_stream_yields_tokens_then_done(settings, monkeypatch):
+    monkeypatch.setenv("RECONS_CHAT_CMD", "printf 'first line\\nsecond line\\n' --ignore {text}")
+    events = list(ChatBackend(settings).stream(_record(settings.root), "hi"))
+    kinds = [e["type"] for e in events]
+    assert kinds[-1] == "done"
+    text = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "first line" in text and "second line" in text
+
+
+def test_stream_uses_the_agents_own_home(settings, monkeypatch, tmp_path):
+    probe = tmp_path / "probe.sh"
+    probe.write_text("#!/bin/sh\necho \"HOME=$HERMES_HOME\"\n")
+    probe.chmod(0o755)
+    monkeypatch.setenv("RECONS_CHAT_CMD", f"{probe} {{text}}")
+
+    rec = _record(settings.root)
+    events = list(ChatBackend(settings).stream(rec, "hi"))
+    text = "".join(e.get("text", "") for e in events)
+    assert f"HOME={settings.home_dir(rec.id)}" in text
+
+
+def test_imported_agent_keeps_its_original_home(settings, monkeypatch, tmp_path):
+    probe = tmp_path / "probe.sh"
+    probe.write_text("#!/bin/sh\necho \"HOME=$HERMES_HOME\"\n")
+    probe.chmod(0o755)
+    monkeypatch.setenv("RECONS_CHAT_CMD", f"{probe} {{text}}")
+
+    rec = _record(settings.root)
+    rec.home = str(tmp_path / "existing-hermes")
+    rec.imported = True
+    events = list(ChatBackend(settings).stream(rec, "hi"))
+    assert f"HOME={rec.home}" in "".join(e.get("text", "") for e in events)
+
+
+def test_missing_cli_reports_the_override(settings, monkeypatch):
+    monkeypatch.setenv("RECONS_CHAT_CMD", "definitely-not-hermes-xyz {text}")
+    events = list(ChatBackend(settings).stream(_record(settings.root), "hi"))
+    assert events[-1]["type"] == "error"
+    assert "RECONS_CHAT_CMD" in events[-1]["message"]
+
+
+def test_nonzero_exit_reports_stderr_and_override(settings, monkeypatch, tmp_path):
+    fail = tmp_path / "fail.sh"
+    fail.write_text("#!/bin/sh\necho 'unknown option -p' >&2\nexit 2\n")
+    fail.chmod(0o755)
+    monkeypatch.setenv("RECONS_CHAT_CMD", f"{fail} {{text}}")
+
+    events = list(ChatBackend(settings).stream(_record(settings.root), "hi"))
+    err = events[-1]
+    assert err["type"] == "error"
+    assert "unknown option -p" in err["message"]
+    assert "RECONS_CHAT_CMD" in err["message"]
+
+
+# --- the endpoint -------------------------------------------------------------
+@pytest.fixture
 def client(settings):
-    app = build_app(settings)
-    app.state.chat_client = FakeChatClient()
-    c = make_client(app)
-    login(c)
-    c.post("/api/agents", json={"name": "Recon", "role": "x"})
-    c.app = app  # type: ignore[attr-defined]
-    return c
+    return authed_client(build_app(settings))
 
 
-def _frames(text: str) -> list[dict]:
-    return list(parse_sse(text.splitlines()))
+def _sse_events(body: str):
+    out = []
+    for line in body.splitlines():
+        if line.startswith("data: "):
+            out.append(json.loads(line[6:]))
+    return out
 
 
-def test_chat_streams_sse(client, settings):
-    with client.stream("POST", "/api/agents/recon/messages", json={"text": "find suppliers"}) as r:
-        assert r.status_code == 200
-        assert r.headers["content-type"].startswith("text/event-stream")
-        assert r.headers["cache-control"] == "no-store"
-        body = "".join(r.iter_text())
-    events = _frames(body)
-    assert events[0] == {"type": "tool_call", "name": "browser_navigate"}
-    assert events[1]["text"] == "On it: find suppliers"
-    assert events[-1] == {"type": "done"}
-    assert client.app.state.chat_client.calls == [("recon", "find suppliers", None)]
-    # Audited without the message text.
+def test_endpoint_streams_sse(client, settings, monkeypatch):
+    from recons_orchestrator.models import AgentSpec
+
+    monkeypatch.setenv("RECONS_CHAT_CMD", "printf 'hello from sophie\\n' --ignore {text}")
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+
+    resp = client.post("/api/agents/sophie/messages", json={"text": "hi"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    events = _sse_events(resp.text)
+    assert events[-1]["type"] == "done"
+    assert any("hello from sophie" in e.get("text", "") for e in events)
+
+
+def test_endpoint_404_for_unknown_agent(client):
+    assert client.post("/api/agents/nope/messages", json={"text": "hi"}).status_code == 404
+
+
+def test_endpoint_is_gated_like_everything_else(settings):
+    c = make_client(build_app(settings))
+    assert c.post("/api/agents/sophie/messages", json={"text": "hi"}).status_code == 401
+
+
+def test_endpoint_refuses_paused_agent_and_audits_turns(client, settings, monkeypatch):
+    from recons_orchestrator.models import AgentSpec
+
+    monkeypatch.setenv("RECONS_CHAT_CMD", "printf 'ok\\n' --ignore {text}")
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+    assert client.post("/api/agents/sophie/messages", json={"text": "find suppliers"}).status_code == 200
     rows = (settings.root / "audit" / "operator.jsonl").read_text()
     assert '"category": "chat"' in rows
-    assert "find suppliers" not in rows
+    assert "find suppliers" not in rows  # the text is the agent's record, not ours
+    assert client.post("/api/agents/sophie/messages", json={"text": "x" * 20_001}).status_code == 422
+    client.post("/api/agents/sophie/pause")
+    assert client.post("/api/agents/sophie/messages", json={"text": "hi"}).status_code == 409
 
 
-def test_chat_requires_running_agent_and_valid_body(client):
-    assert client.post("/api/agents/nope/messages", json={"text": "x"}).status_code == 404
-    assert client.post("/api/agents/recon/messages", json={"text": ""}).status_code == 422
-    assert client.post("/api/agents/recon/messages", json={"text": "x" * 20_001}).status_code == 422
-    client.post("/api/agents/recon/pause")
-    assert client.post("/api/agents/recon/messages", json={"text": "x"}).status_code == 409
+def test_approval_decision_is_recorded(client, settings):
+    from recons_orchestrator.models import AgentSpec
 
-
-def test_chat_is_gated_like_everything_else(settings):
-    app = build_app(settings)
-    app.state.chat_client = FakeChatClient()
-    c = make_client(app)
-    assert c.post("/api/agents/recon/messages", json={"text": "x"}).status_code == 401
-
-
-def test_approval_decision_forwarded_and_audited(client, settings):
-    r = client.post("/api/agents/recon/approvals/appr-1", json={"decision": "approve"})
-    assert r.status_code == 200
-    assert client.app.state.chat_client.decisions == [("recon", "appr-1", "approve")]
-    assert client.post("/api/agents/recon/approvals/appr-1", json={"decision": "maybe"}).status_code == 422
+    Provisioner(settings, services=RecordingServiceManager()).create_agent(
+        AgentSpec(name="Sophie", role="Email")
+    )
+    r = client.post("/api/agents/sophie/approvals/appr-1", json={"decision": "approve"})
+    assert r.status_code == 200 and r.json()["status"] == "recorded"
+    assert client.post("/api/agents/sophie/approvals/appr-1", json={"decision": "maybe"}).status_code == 422
+    assert client.post("/api/agents/nope/approvals/appr-1", json={"decision": "deny"}).status_code == 404
     rows = (settings.root / "audit" / "operator.jsonl").read_text()
     assert '"action": "approval_approve"' in rows
-    assert '"target": "recon/appr-1"' in rows
+    assert '"target": "sophie/appr-1"' in rows
+
+
+def test_endpoint_rejects_empty_message(client, settings):
+    from recons_orchestrator.models import AgentSpec
+
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+    assert client.post("/api/agents/sophie/messages", json={"text": "  "}).status_code == 422
+
+
+def test_ansi_escapes_are_stripped(settings, monkeypatch, tmp_path):
+    """Terminal colour codes must not reach the chat bubble."""
+    script = tmp_path / "colour.sh"
+    script.write_text("#!/bin/sh\nprintf '\\033[31mred alert\\033[0m plain\\n'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("RECONS_CHAT_CMD", f"{script} {{text}}")
+
+    events = list(ChatBackend(settings).stream(_record(settings.root), "hi"))
+    text = "".join(e.get("text", "") for e in events if e["type"] == "token")
+    assert "red alert" in text and "plain" in text
+    assert "\x1b" not in text
+
+
+def test_child_gets_no_tty_and_unbuffered_env(settings, monkeypatch, tmp_path):
+    """stdin is EOF (a TUI cannot hang us) and buffering is discouraged."""
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/bin/sh\n"
+        "if [ -t 0 ]; then echo stdin=tty; else echo stdin=notty; fi\n"
+        "read -r line && echo \"got:$line\" || echo stdin=eof\n"
+        "echo \"unbuf=$PYTHONUNBUFFERED term=$TERM\"\n"
+    )
+    probe.chmod(0o755)
+    monkeypatch.setenv("RECONS_CHAT_CMD", f"{probe} {{text}}")
+
+    events = list(ChatBackend(settings).stream(_record(settings.root), "hi"))
+    text = "".join(e.get("text", "") for e in events if e["type"] == "token")
+    assert "stdin=notty" in text
+    assert "stdin=eof" in text          # read hit EOF instantly instead of hanging
+    assert "unbuf=1" in text and "term=dumb" in text
+    assert events[-1]["type"] == "done"
+
+
+# --- history ------------------------------------------------------------------
+def test_history_endpoint_returns_the_agents_recorded_turns(client, settings):
+    from recons_orchestrator.models import AgentSpec
+    from tests.fixtures import make_state_db
+
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+    make_state_db(settings.home_dir("sophie") / "state.db", agent="sophie",
+                  base_ts=1_786_000_000)
+
+    body = client.get("/api/agents/sophie/history").json()
+    roles = [m["role"] for m in body["messages"]]
+    assert roles == ["user", "assistant", "assistant"]
+    assert body["messages"][0]["text"] == "Find three suppliers"
+
+
+def test_history_empty_when_agent_has_no_db_yet(client, settings):
+    from recons_orchestrator.models import AgentSpec
+
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+    assert client.get("/api/agents/sophie/history").json() == {"messages": []}
+
+
+def test_history_404_for_unknown_agent(client):
+    assert client.get("/api/agents/nope/history").status_code == 404
+
+
+# --- shared credentials -------------------------------------------------------
+def test_existing_real_auth_json_is_never_replaced(monkeypatch, tmp_path):
+    """A migrated agent arrives with its own credentials file — the shared-auth
+    self-heal must leave a regular auth.json exactly as it found it."""
+    from recons_orchestrator.chat import ensure_shared_auth
+
+    default_home = tmp_path / "default-hermes"
+    default_home.mkdir()
+    (default_home / "auth.json").write_text('{"shared": true}')
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    agent_home = tmp_path / "agent-home"
+    agent_home.mkdir()
+    (agent_home / "auth.json").write_text('{"mine": true}')
+
+    ensure_shared_auth(agent_home)
+
+    target = agent_home / "auth.json"
+    assert not target.is_symlink()
+    assert target.read_text() == '{"mine": true}'
+
+
+def test_dangling_auth_symlink_is_healed(monkeypatch, tmp_path):
+    """A link to a moved/deleted default store used to wedge the agent
+    unauthenticated forever (FileExistsError swallowed on every turn)."""
+    from recons_orchestrator.chat import ensure_shared_auth
+
+    default_home = tmp_path / "default-hermes"
+    default_home.mkdir()
+    (default_home / "auth.json").write_text('{"shared": true}')
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    agent_home = tmp_path / "agent-home"
+    agent_home.mkdir()
+    (agent_home / "auth.json").symlink_to(tmp_path / "gone.json")  # dangling
+
+    ensure_shared_auth(agent_home)
+
+    target = agent_home / "auth.json"
+    assert target.is_symlink()
+    assert target.resolve() == (default_home / "auth.json").resolve()
+
+
+def test_new_agent_links_the_shared_auth_store(settings, monkeypatch, tmp_path):
+    from recons_orchestrator.models import AgentSpec
+
+    default_home = tmp_path / "default-hermes"
+    default_home.mkdir()
+    (default_home / "auth.json").write_text('{"providers": {"openai": {}}}')
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+
+    link = settings.home_dir("sophie") / "auth.json"
+    assert link.is_symlink()
+    assert link.resolve() == (default_home / "auth.json").resolve()
+    # Shared, not copied: a token refresh in the default store is visible here.
+    (default_home / "auth.json").write_text('{"providers": {"openai": {"t": "new"}}}')
+    assert "new" in link.read_text()

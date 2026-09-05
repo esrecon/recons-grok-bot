@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Model tiers map to a provider/model pair in config.py. The dashboard offers
 # these as friendly labels; the provisioner turns them into Hermes provider
@@ -24,7 +24,16 @@ class AgentStatus(str, Enum):
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_RESERVED = frozenset({"shared", "pending", "orchestrator", "roster", "all", "new", "api", "hermes"})
+# Reserved ids: "shared" and "roster" collide with the $RECONS_ROOT layout
+# (shared/, roster.json) and "shared" doubles as a skill-source label; "api" is
+# special-cased by the SPA catch-all route; "all" and "new" are held back for
+# future collective endpoints. "hermes" is deliberately NOT reserved: agents
+# live under agents/<id> (never ~/.hermes), and the default Hermes profile is
+# discovered under exactly that name — reserving it made the most common
+# import (your own ~/.hermes agent) impossible. "pending" is the skill-source
+# label for agent drafts and "orchestrator" is the pseudo-agent operator
+# actions are attributed to in the ledger.
+_RESERVED = frozenset({"shared", "roster", "all", "new", "api", "pending", "orchestrator"})
 
 
 def slugify(name: str) -> str:
@@ -78,3 +87,52 @@ class AgentRecord(BaseModel):
     status: AgentStatus = AgentStatus.RUNNING
     is_lead: bool = False
     created_at: str  # ISO-8601; injected so provisioning stays deterministic in tests
+    # Agents adopted from an existing Hermes install keep their own home and
+    # own their config: we read their history but never rewrite their files.
+    home: str | None = None
+    imported: bool = False
+    # Human-readable reason when status is ERROR (e.g. the systemd failure that
+    # kept the agent's gateway from starting). Empty otherwise.
+    status_detail: str = ""
+    # Telegram gateway, rendered into config.yaml + service.env by the mesh.
+    # allowed_users is a comma-separated list of NUMERIC Telegram user ids; the
+    # validator below refuses enabled-without-allowlist, so an open gateway is
+    # unrepresentable in the roster (docs/60: per-platform allowlists).
+    telegram_enabled: bool = False
+    telegram_allowed_users: str = ""
+    # Captured at promotion so an adopted agent keeps the provider/model it
+    # arrived with instead of falling back to the tier constants (config.py).
+    # Also settable from the Customize tab: when both are present they override
+    # the tier's model in the generated config (mesh._write_config).
+    model_provider: str | None = None
+    model_name: str | None = None
+    # Bumped whenever a generated headshot is (re)saved; the dashboard uses it
+    # as a cache-buster (/api/agents/{id}/avatar?v=N). None = no image yet.
+    avatar_version: int | None = None
+
+    @model_validator(mode="after")
+    def _check_telegram(self) -> "AgentRecord":
+        if self.telegram_enabled:
+            users = self.telegram_allowed_users.replace(" ", "")
+            if not re.fullmatch(r"\d+(,\d+)*", users):
+                raise ValueError(
+                    "telegram_enabled requires telegram_allowed_users: a "
+                    "comma-separated list of numeric Telegram user ids"
+                )
+            self.telegram_allowed_users = users
+        return self
+
+
+class PromoteReport(BaseModel):
+    """What promote_agent actually did — honest accounting for the operator.
+
+    captured_config_keys are the old config's top-level blocks the template
+    does not model; they are preserved in config-extras.yaml (extras_path)
+    and re-appended to the generated config on every regeneration."""
+
+    record: AgentRecord
+    model_captured: bool
+    telegram_token_source: str  # "provided" | "extracted" | "none"
+    captured_config_keys: list[str]
+    extras_path: str
+    backup_path: str

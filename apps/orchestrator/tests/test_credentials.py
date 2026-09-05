@@ -183,9 +183,9 @@ def client(settings):
 def test_providers_listing_masks_everything(client, settings):
     settings.shared_secrets_env.parent.mkdir(parents=True, exist_ok=True)
     settings.shared_secrets_env.write_text(f"NOUS_API_KEY={SECRET_VALUE}\n")
-    body = client.get("/api/settings/providers").json()
+    body = client.get("/api/settings/credentials").json()
     ids = [p["id"] for p in body["providers"]]
-    assert {"claude_wrapper", "anthropic", "openai", "nous", "telegram", "orchestrator"} <= set(ids)
+    assert {"claude_wrapper", "anthropic", "openai", "nous", "orchestrator"} <= set(ids)
     nous = next(p for p in body["providers"] if p["id"] == "nous")
     key = next(k for k in nous["keys"] if k["key"] == "NOUS_API_KEY")
     assert key["configured"] is True
@@ -202,16 +202,16 @@ def test_providers_listing_masks_everything(client, settings):
 
 def test_health_probe_for_local_wrapper(client, settings):
     settings.shared_secrets_env.parent.mkdir(parents=True, exist_ok=True)
-    body = client.get("/api/settings/providers").json()
+    body = client.get("/api/settings/credentials").json()
     wrapper = next(p for p in body["providers"] if p["id"] == "claude_wrapper")
     assert wrapper["health"] == "not_configured"
     settings.shared_secrets_env.write_text("CLAUDE_WRAPPER_BASE_URL=http://127.0.0.1:8600/v1\n")
-    body = client.get("/api/settings/providers").json()
+    body = client.get("/api/settings/credentials").json()
     wrapper = next(p for p in body["providers"] if p["id"] == "claude_wrapper")
     assert wrapper["health"] == "ok"
     assert client.app.state.prober.urls == ["http://127.0.0.1:8600/v1"]
     client.app.state.prober.result = "unreachable"
-    body = client.get("/api/settings/providers").json()
+    body = client.get("/api/settings/credentials").json()
     assert next(p for p in body["providers"] if p["id"] == "claude_wrapper")["health"] == "unreachable"
     # Remote providers are never probed with the key.
     assert next(p for p in body["providers"] if p["id"] == "nous")["health"] in ("not_configured", "unknown")
@@ -245,7 +245,7 @@ def test_set_replace_remove_via_api_with_audit(client, settings):
 def test_secret_value_never_appears_anywhere(client, settings):
     client.put("/api/settings/credentials/NOUS_API_KEY", json={"value": SECRET_VALUE})
     surfaces = [
-        client.get("/api/settings/providers").text,
+        client.get("/api/settings/credentials").text,
         client.get("/api/audit").text,
         client.get("/api/audit/export.jsonl").text,
         client.get("/api/settings/security").text,

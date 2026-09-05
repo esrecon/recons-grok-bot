@@ -12,9 +12,15 @@
 | `agents/<id>/service.env` | HERMES_HOME + A2A tokens |
 | `shared/skills/` | Every skill you've taught and approved |
 | `shared/secrets.env`, `shared/a2a-tokens.json` | Keys and edge tokens |
+| `agents/<id>/.migrate-hermes.json`, `agents/<id>/sync-backups/` | Migration stamp + pre-refresh copies for an agent migrated from another machine (docs/70) |
 
 Not worth backing up: `dashboard/` and `app/` (rebuild from git), and Docker
 images.
+
+One honest caveat: the archive tars each agent's `state.db` in place, so a
+busy agent's copy can be mid-write. For a guaranteed-consistent copy, pause
+the agent first — `migrate-hermes.sh` snapshots its *source* via
+`sqlite3 ".backup"` for exactly this reason.
 
 ## Back up
 
@@ -70,9 +76,17 @@ hypothesis.
 ./scripts/update.sh
 ```
 
-In order: backup → `hermes update` + `hermes doctor` → `git pull` → rebuild the
-dashboard → restart services → `vps-verify.sh`. It refuses to continue if the
-backup fails.
+In order: backup → `hermes update` + `hermes doctor` → `git pull` (+ re-sync of
+`/opt/recons/app` and `uv sync` when the checkout lives elsewhere) → rebuild the
+dashboard and deploy it to where it is served → restart services → `vps-verify.sh`.
+It refuses to continue if the backup fails, and it fails loudly if the
+orchestrator does not restart — an "update" that keeps serving the old code is
+worse than no update.
+
+Run it as the operator account or as root — either works. It restarts units in
+the systemd scope your install recorded at bootstrap
+(`/opt/recons/systemd-scope`), reaching the owning user's manager when run as
+root, and prints the scope it used in step 5.
 
 Updating Hermes promptly is a **security control**, not housekeeping — see
 [60-security-hardening.md](60-security-hardening.md).
@@ -86,7 +100,8 @@ Updating Hermes promptly is a **security control**, not housekeeping — see
    ```
 3. Confirm each agent still starts:
    ```bash
-   systemctl --user list-units 'hermes-gateway@*'
+   systemctl --user list-units 'hermes-gateway@*'   # user-scope installs
+   systemctl list-units 'hermes-gateway@*'          # system-scope installs
    ```
 4. Run `./scripts/vps-verify.sh` — especially the approvals, sandbox and
    loopback-bind assertions, in case a new default changed underneath you.

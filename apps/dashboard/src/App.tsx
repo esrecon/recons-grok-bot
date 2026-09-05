@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Agent, NewAgentInput, SessionInfo } from "./types";
+import type { Agent, NewAgentInput, SessionInfo, SetupStatus } from "./types";
 import type { View } from "./types-view";
 import { api, onAuthChange } from "./api";
 import { applyTheme, loadTheme, type ThemeMode } from "./theme";
@@ -9,8 +9,10 @@ import { NewAgentModal } from "./components/NewAgentModal";
 import { AuditView } from "./views/AuditView";
 import { SkillsView } from "./views/SkillsView";
 import { RoutinesView } from "./views/RoutinesView";
+import { CustomizeView } from "./views/CustomizeView";
 import { SessionsView } from "./views/SessionsView";
 import { SettingsView } from "./views/SettingsView";
+import { SetupWizard } from "./views/SetupWizard";
 import { LoginView } from "./views/LoginView";
 
 export function App() {
@@ -22,6 +24,9 @@ export function App() {
   const [modalOpen, setModalOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>("light");
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
+  // Dismissing lets you reach the normal UI mid-setup; it returns next load.
+  const [wizardDismissed, setWizardDismissed] = useState(false);
   // On phones the app is a single-pane messenger: the roster is home, and
   // opening an agent or a surface pushes it over the top with a back button.
   // On md+ both panes show side by side, as on desktop.
@@ -66,8 +71,9 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.listAgents();
+      const [list, setupStatus] = await Promise.all([api.listAgents(), api.setup()]);
       setAgents(list);
+      setSetup(setupStatus);
       setLoadError(null);
       setSelectedId((cur) => cur ?? list[0]?.id ?? null);
     } catch (e) {
@@ -92,9 +98,11 @@ export function App() {
       await api.logout();
     } finally {
       setAgents([]);
+      setSetup(null);
       setSelectedId(null);
       setView("chats");
       setMobileDetail(false);
+      setWizardDismissed(false);
       setSession((cur) =>
         cur ? { ...cur, authenticated: false, operator: null, csrf_token: null } : cur,
       );
@@ -120,6 +128,36 @@ export function App() {
   }
 
   const selected = agents.find((a) => a.id === selectedId) ?? null;
+
+  // Until there's a provider and an agent, setup is the whole app — there is
+  // nothing useful to show behind it, and no reason to send anyone to a terminal.
+  if (setup && !setup.complete && !wizardDismissed) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-hidden">
+        <SetupWizard
+          status={setup}
+          onChanged={refresh}
+          onNewAgent={() => setModalOpen(true)}
+        />
+        {setup.has_provider && (
+          <button
+            type="button"
+            onClick={() => setWizardDismissed(true)}
+            className="border-t border-hairline py-2 text-sm text-text-secondary"
+          >
+            Skip for now
+          </button>
+        )}
+        {modalOpen && (
+          <NewAgentModal
+            existing={agents}
+            onClose={() => setModalOpen(false)}
+            onCreate={createAgent}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full w-full overflow-hidden">
@@ -182,9 +220,16 @@ export function App() {
         {view === "sessions" && <SessionsView agents={agents} />}
         {view === "skills" && <SkillsView agents={agents} />}
         {view === "routines" && <RoutinesView agents={agents} />}
+        {view === "customize" && <CustomizeView agents={agents} onChanged={refresh} />}
         {view === "audit" && <AuditView agents={agents} />}
         {view === "settings" && (
-          <SettingsView agents={agents} session={session} onSignOut={signOut} />
+          <SettingsView
+            providers={setup?.providers ?? []}
+            agents={agents}
+            session={session}
+            onChanged={refresh}
+            onSignOut={signOut}
+          />
         )}
       </main>
 

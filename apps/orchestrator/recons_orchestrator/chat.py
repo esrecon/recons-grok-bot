@@ -1,263 +1,232 @@
-"""Live chat proxy: browser ⇄ orchestrator (SSE) ⇄ agent (A2A over loopback).
+"""Chat backend — the bridge between the dashboard's chat pane and Hermes.
 
-The dashboard never talks to an agent directly. It POSTs a turn to the
-orchestrator, which streams Server-Sent Events back (`token`, `tool_call`,
-`approval`, `done`, `error` — the shape `apps/dashboard/src/types.ts`
-expects) while talking A2A to the agent's loopback port with the
-orchestrator's own edge token (minted by mesh.py, stored in
-`shared/a2a-tokens.json`, never sent to the browser).
+Sending a message runs the Hermes CLI non-interactively with HERMES_HOME
+pointed at the agent's own home, so the reply comes from *that* agent: its
+SOUL.md, its memory, its model tier. Output streams back to the browser as
+SSE events as it is produced.
 
-`ChatClient` is the seam: the production adapter below speaks the A2A
-JSON-RPC `message/stream` method; tests inject a fake. The exact A2A event
-shapes Hermes emits are `VERIFY` points and the mapping is deliberately
-tolerant — unknown events are skipped, never fatal.
+The exact CLI syntax is version-fragile (VERIFY), so the command is a
+template, overridable without a code change:
+
+    RECONS_CHAT_CMD='hermes -z {text}'     # default (verified against the CLI reference)
+
+`{text}` is substituted as a single argv element (never through a shell), so
+message content cannot inject options or commands. If the command fails, the
+error event carries the command actually run and the override hint — the
+same honest-failure contract as provider sign-in.
 """
 
 from __future__ import annotations
 
-import json
-import uuid
+import codecs
+import logging
+import os
+import re
+import shlex
+import shutil
+import subprocess
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable, Iterator, Protocol
-
-import httpx
+from typing import Any
 
 from .config import Settings
-from .mesh import ORCHESTRATOR_ID
 from .models import AgentRecord
+from .secrets_store import SecretsStore
 
-ChatEvent = dict[str, Any]
+log = logging.getLogger("recons.chat")
 
+# CLIs aimed at terminals emit colour and cursor codes; in a chat bubble those
+# are garbage. Strip CSI/OSC escape sequences from every token.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 
-class ChatClient(Protocol):
-    def stream(
-        self, agent: AgentRecord, text: str, *, session_id: str | None = None
-    ) -> AsyncIterator[ChatEvent]: ...
-
-    async def decide(self, agent: AgentRecord, approval_id: str, decision: str) -> None: ...
-
-
-# --- SSE parsing ----------------------------------------------------------------
-class SSEParser:
-    """Incremental `data:` frame parser (multi-line data, comments ignored)."""
-
-    def __init__(self) -> None:
-        self._data: list[str] = []
-
-    def feed(self, line: str) -> list[dict]:
-        line = line.rstrip("\r\n")
-        if line == "":
-            return self.flush()
-        if line.startswith(":"):
-            return []
-        if line.startswith("data:"):
-            payload = line[5:]
-            if payload.startswith(" "):
-                payload = payload[1:]
-            self._data.append(payload)
-        return []
-
-    def flush(self) -> list[dict]:
-        if not self._data:
-            return []
-        raw = "\n".join(self._data)
-        self._data = []
-        try:
-            obj = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
-        return [obj] if isinstance(obj, dict) else []
+DEFAULT_CHAT_CMD = "hermes -z {text}"
 
 
-def parse_sse(lines: Iterable[str]) -> Iterator[dict]:
-    parser = SSEParser()
-    for line in lines:
-        yield from parser.feed(line)
-    yield from parser.flush()
+def ensure_shared_auth(agent_home: Path) -> None:
+    """Link the default HERMES_HOME's auth store into an agent home.
+
+    Subscription logins (Codex, Nous OAuth) live in the default home; agents
+    share credentials by design. A symlink, not a copy, so refreshed tokens
+    stay shared. Called at provision time AND before each chat turn, so agents
+    created before this existed heal themselves.
+    """
+    default_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    source = default_home / "auth.json"  # VERIFY filename against Hermes
+    target = agent_home / "auth.json"
+    try:
+        if target.is_symlink() and not target.exists():
+            # Dangling link (the default store moved or was deleted). Without
+            # this, exists() stays False, symlink_to raises FileExistsError,
+            # the except below swallows it — and the agent is silently
+            # unauthenticated on every turn, forever.
+            target.unlink()
+        if (
+            source.is_file()
+            and not target.exists()
+            and not target.is_symlink()  # never replace a link OR a real file
+            and agent_home.is_dir()
+        ):
+            target.symlink_to(source)
+    except OSError:
+        pass  # degrade to an unauthenticated agent, never a crash
 
 
-# --- A2A → dashboard events (VERIFY against the installed Hermes) ---------------
-def _texts(parts: Any) -> list[str]:
-    out: list[str] = []
-    if not isinstance(parts, list):
-        return out
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        if part.get("kind", "text") == "text" and isinstance(part.get("text"), str):
-            out.append(part["text"])
-    return out
-
-
-def a2a_result_to_events(result: Any) -> list[ChatEvent]:
-    """Map one JSON-RPC `result` object from `message/stream` to chat events."""
-    if not isinstance(result, dict):
-        return []
-    events: list[ChatEvent] = []
-    kind = result.get("kind")
-
-    if kind == "message" or ("parts" in result and "role" in result):
-        events.extend({"type": "token", "text": t} for t in _texts(result.get("parts")))
-        return events
-
-    if kind == "artifact-update":
-        artifact = result.get("artifact") or {}
-        events.extend({"type": "token", "text": t} for t in _texts(artifact.get("parts")))
-        return events
-
-    if kind == "status-update" or kind == "task" or "status" in result:
-        status = result.get("status") or {}
-        state = str(status.get("state") or "").lower()
-        message = status.get("message") or {}
-        texts = _texts(message.get("parts"))
-        if state == "input-required":
-            events.append({
-                "type": "approval",
-                "id": str(result.get("taskId") or result.get("id") or "task"),
-                "title": "Needs your approval",
-                "body": " ".join(texts) or "The agent is waiting for your decision.",
-                "kind": "input",
-            })
-        elif state == "failed":
-            events.append({"type": "error", "message": "agent reported failure"})
+def chat_command(text: str) -> list[str]:
+    """Build argv from the template, substituting {text} as one argument."""
+    template = os.environ.get("RECONS_CHAT_CMD", DEFAULT_CHAT_CMD)
+    argv: list[str] = []
+    substituted = False
+    for part in shlex.split(template):
+        if part == "{text}":
+            argv.append(text)
+            substituted = True
         else:
-            events.extend({"type": "token", "text": t} for t in texts)
-        if result.get("final") or state in ("completed", "failed", "canceled", "rejected"):
-            events.append({"type": "done"})
-        return events
-
-    if "error" in result and isinstance(result["error"], dict):
-        events.append({"type": "error", "message": str(result["error"].get("message") or "agent error")})
-    return events
+            argv.append(part)
+    if not substituted:
+        argv.append(text)
+    return argv
 
 
-# --- production adapter ----------------------------------------------------------
-class A2AChatClient:
-    def __init__(
-        self,
-        settings: Settings,
-        *,
-        transport: httpx.AsyncBaseTransport | None = None,
-        timeout: float = 180.0,
-    ) -> None:
+# Where the Hermes CLI actually lives when it isn't on the service's PATH:
+# the installer's venv entry point, then the per-user and system locations
+# `hermes doctor --fix` maintains. systemd units get a minimal PATH, so a CLI
+# a login shell finds fine can be invisible to which() here — observed in the
+# field as "Could not run `hermes`" from a box where root ran it daily.
+_CLI_CANDIDATE_DIRS = (
+    Path("/usr/local/lib/hermes-agent/venv/bin"),
+    Path.home() / ".local/bin",
+    Path("/usr/local/bin"),
+)
+
+
+def resolve_cmd(argv: list[str]) -> list[str]:
+    """argv with argv[0] made absolute when it can be found.
+
+    Explicit paths are respected; a bare command is looked up on PATH first,
+    then in the known install locations. Unresolvable commands come back
+    unchanged so callers keep their friendly is-it-installed error paths.
+    """
+    if not argv or "/" in argv[0]:
+        return argv
+    if shutil.which(argv[0]):
+        return argv
+    for directory in _CLI_CANDIDATE_DIRS:
+        candidate = directory / argv[0]
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate), *argv[1:]]
+    return argv
+
+
+def chat_timeout() -> float:
+    try:
+        return float(os.environ.get("RECONS_CHAT_TIMEOUT", "300"))
+    except ValueError:
+        return 300.0
+
+
+class ChatBackend:
+    def __init__(self, settings: Settings) -> None:
         self._s = settings
-        self._transport = transport
-        self._timeout = timeout
 
-    @property
-    def _token_store(self) -> Path:
-        return self._s.shared_dir / "a2a-tokens.json"
+    def _agent_home(self, record: AgentRecord) -> Path:
+        return Path(record.home) if record.home else self._s.home_dir(record.id)
 
-    def _token(self, agent_id: str) -> str | None:
-        if not self._token_store.exists():
-            return None
+    def stream(self, record: AgentRecord, text: str) -> Iterator[dict[str, Any]]:
+        """Run one chat turn; yield ChatEvent dicts, ending with done/error."""
+        argv = resolve_cmd(chat_command(text))
+        agent_home = self._agent_home(record)
+        if not record.imported:
+            # Imported agents own their homes; we never write into those.
+            ensure_shared_auth(agent_home)
+
+        env = dict(os.environ)
+        # Keys saved from the dashboard after the orchestrator started aren't
+        # in its inherited environment (systemd loads secrets.env at unit
+        # start). Overlay the file so chat sees the same credentials a freshly
+        # restarted gateway would.
         try:
-            tokens = json.loads(self._token_store.read_text("utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
-        tok = tokens.get(f"{ORCHESTRATOR_ID}->{agent_id}") if isinstance(tokens, dict) else None
-        return str(tok) if tok else None
+            env.update(SecretsStore(self._s.shared_secrets_env).as_env())
+        except OSError:
+            pass
+        env["HERMES_HOME"] = str(agent_home)
+        # Persuade the child to behave like a program, not a terminal app:
+        # unbuffered output (a pipe otherwise block-buffers, which reads as "no
+        # reply" for the whole run), no colour codes, no TUI.
+        env["PYTHONUNBUFFERED"] = "1"
+        env["NO_COLOR"] = "1"
+        env["TERM"] = "dumb"
+        env.pop("FORCE_COLOR", None)
 
-    @staticmethod
-    def _url(agent: AgentRecord) -> str:
-        return f"http://127.0.0.1:{agent.a2a_port}/"  # loopback only, by construction
-
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            transport=self._transport,
-            timeout=httpx.Timeout(self._timeout, connect=5.0),
-        )
-
-    @staticmethod
-    def _message(text: str, session_id: str | None) -> dict[str, Any]:
-        msg: dict[str, Any] = {
-            "role": "user",
-            "messageId": uuid.uuid4().hex,
-            "parts": [{"kind": "text", "text": text}],
-        }
-        if session_id:
-            msg["contextId"] = session_id  # VERIFY: A2A contextId ≈ Hermes session
-        return msg
-
-    async def stream(
-        self, agent: AgentRecord, text: str, *, session_id: str | None = None
-    ) -> AsyncIterator[ChatEvent]:
-        token = self._token(agent.id)
-        if not token:
-            yield {"type": "error",
-                   "message": "no orchestrator A2A token for this agent — re-run provisioning"}
-            yield {"type": "done"}
-            return
-        payload = {
-            "jsonrpc": "2.0",
-            "id": uuid.uuid4().hex,
-            "method": "message/stream",  # VERIFY A2A method name for the Hermes version
-            "params": {"message": self._message(text, session_id)},
-        }
-        headers = {"authorization": f"Bearer {token}", "accept": "text/event-stream"}
-        done = False
+        log.info("chat[%s]: %s", record.id, " ".join(argv[:-1]) + " <text>")
         try:
-            async with self._client() as http:
-                async with http.stream("POST", self._url(agent), json=payload, headers=headers) as resp:
-                    if resp.status_code != 200:
-                        yield {"type": "error", "message": f"agent answered HTTP {resp.status_code}"}
-                        yield {"type": "done"}
-                        return
-                    if "text/event-stream" in resp.headers.get("content-type", ""):
-                        parser = SSEParser()
-                        async for line in resp.aiter_lines():
-                            for frame in parser.feed(line):
-                                for ev in self._frame_events(frame):
-                                    done = done or ev["type"] == "done"
-                                    yield ev
-                        for frame in parser.flush():
-                            for ev in self._frame_events(frame):
-                                done = done or ev["type"] == "done"
-                                yield ev
-                    else:
-                        body = await resp.aread()
-                        try:
-                            frame = json.loads(body)
-                        except json.JSONDecodeError:
-                            frame = {}
-                        for ev in self._frame_events(frame):
-                            done = done or ev["type"] == "done"
-                            yield ev
-        except httpx.HTTPError as exc:
-            yield {"type": "error", "message": f"agent unreachable ({type(exc).__name__})"}
-            yield {"type": "done"}
+            proc = subprocess.Popen(  # noqa: S603 - argv template is operator-configured
+                argv,
+                stdin=subprocess.DEVNULL,  # a TUI probing stdin gets EOF, not a hang
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+        except FileNotFoundError:
+            yield {
+                "type": "error",
+                "message": (
+                    f"Could not run `{argv[0]}` — is the Hermes CLI installed and on "
+                    "PATH for the orchestrator service? Set RECONS_CHAT_CMD if your "
+                    "Hermes version uses a different command."
+                ),
+            }
             return
-        if not done:
+        except OSError as exc:
+            yield {"type": "error", "message": str(exc)}
+            return
+
+        assert proc.stdout is not None and proc.stderr is not None
+        emitted = False
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            # read1 returns whatever is available (blocking only while there is
+            # nothing), so partial output streams immediately — a line-based
+            # loop sits silent until the child flushes a whole line.
+            while True:
+                chunk = proc.stdout.read1(4096)
+                if not chunk:
+                    break
+                token = _ANSI_RE.sub("", decoder.decode(chunk))
+                if token:
+                    emitted = True
+                    yield {"type": "token", "text": token}
+            code = proc.wait(timeout=chat_timeout())
+            stderr_tail = proc.stderr.read().decode("utf-8", "replace")[-2000:].strip()
+            log.info("chat[%s]: exit=%s stderr=%r", record.id, code, stderr_tail[-300:])
+            if code != 0:
+                yield {
+                    "type": "error",
+                    "message": (
+                        f"`{' '.join(argv[:-1])} …` exited {code}"
+                        + (f": {stderr_tail}" if stderr_tail else "")
+                        + " — adjust RECONS_CHAT_CMD if the syntax differs in your Hermes version."
+                    ),
+                }
+                return
+            if not emitted:
+                yield {
+                    "type": "token",
+                    "text": "(the agent returned no output"
+                    + (f" — stderr said: {stderr_tail}" if stderr_tail else "")
+                    + ")",
+                }
             yield {"type": "done"}
-
-    @staticmethod
-    def _frame_events(frame: Any) -> list[ChatEvent]:
-        if not isinstance(frame, dict):
-            return []
-        if "result" in frame:
-            return a2a_result_to_events(frame["result"])
-        if "error" in frame:
-            err = frame["error"] if isinstance(frame["error"], dict) else {}
-            return [{"type": "error", "message": str(err.get("message") or "agent error")},
-                    {"type": "done"}]
-        return a2a_result_to_events(frame)
-
-    async def decide(self, agent: AgentRecord, approval_id: str, decision: str) -> None:
-        """Forward an approve/deny to the agent's pending prompt.
-
-        VERIFY: Hermes approval semantics over A2A. This sends the decision as
-        a follow-up message (`/approve <id>` | `/deny <id>`) via `message/send`.
-        """
-        token = self._token(agent.id)
-        if not token:
-            raise RuntimeError("no orchestrator A2A token for this agent")
-        payload = {
-            "jsonrpc": "2.0",
-            "id": uuid.uuid4().hex,
-            "method": "message/send",
-            "params": {"message": self._message(f"/{decision} {approval_id}", None)},
-        }
-        async with self._client() as http:
-            resp = await http.post(self._url(agent), json=payload,
-                                   headers={"authorization": f"Bearer {token}"})
-            resp.raise_for_status()
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            log.warning("chat[%s]: timed out after %ss", record.id, int(chat_timeout()))
+            yield {
+                "type": "error",
+                "message": (
+                    f"The agent did not finish within {int(chat_timeout())}s. "
+                    "Raise RECONS_CHAT_TIMEOUT if long tasks are expected."
+                ),
+            }
+        finally:
+            if proc.poll() is None:
+                # Client went away mid-turn — do not leave a headless hermes running.
+                proc.kill()
