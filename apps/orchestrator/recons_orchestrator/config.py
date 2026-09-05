@@ -118,6 +118,11 @@ class Settings:
         return self.shared_dir / "secrets.env"
 
     @property
+    def shared_secrets_meta(self) -> Path:
+        """Who changed which key when — never the values (see credentials.py)."""
+        return self.shared_dir / "secrets.meta.json"
+
+    @property
     def roster_path(self) -> Path:
         return self.root / "roster.json"
 

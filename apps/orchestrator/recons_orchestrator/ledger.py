@@ -5,6 +5,7 @@ Hermes stores agent activity in several places and never merges them:
   * per-agent `a2a_audit.jsonl` — every agent-to-agent exchange, appended
   * per-agent `cron/executions.db` — routine run history
   * live signed webhooks — lifecycle events POSTed to the orchestrator
+  * the orchestrator's own `audit/operator.jsonl` — what the human did
 
 This module reads all of them read-only, normalizes each into one `LedgerEvent`
 shape, and merges them into a single chronological, filterable timeline.
@@ -33,7 +34,7 @@ class LedgerEvent:
     ts: float  # normalized epoch seconds for sorting
     ts_iso: str
     seq: int
-    source: str  # session | a2a | cron | webhook
+    source: str  # session | a2a | cron | webhook | operator
     agent_id: str
     kind: str  # message | tool_call | tool_result | a2a | cron_run | lifecycle
     session_id: str | None = None
@@ -278,6 +279,35 @@ class Ledger:
             ))
         return events
 
+    @property
+    def _operator_store(self) -> Path:
+        return self._s.root / "audit" / "operator.jsonl"
+
+    def _read_operator(self) -> list[LedgerEvent]:
+        path = self._operator_store
+        if not path.exists():
+            return []
+        events: list[LedgerEvent] = []
+        for i, line in enumerate(path.read_text("utf-8").splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts, ts_iso = _norm_ts(_first(rec, "ts"))
+            extra = {k: v for k, v in rec.items()
+                     if k not in {"ts", "ts_iso", "category", "action", "target"}}
+            events.append(LedgerEvent(
+                ts=ts, ts_iso=ts_iso, seq=i, source="operator", agent_id="orchestrator",
+                kind=str(rec.get("category") or "operator"),
+                role=str(rec.get("actor")) if rec.get("actor") else None,
+                text=f"{rec.get('action', '')} {rec.get('target', '')}".strip(),
+                extra=extra,
+            ))
+        return events
+
     def collect(self) -> list[LedgerEvent]:
         events: list[LedgerEvent] = []
         for rec in self._roster.load():
@@ -286,6 +316,7 @@ class Ledger:
             events += read_a2a_audit(rec.id, home / "a2a_audit.jsonl")
             events += read_cron_db(rec.id, home / "cron" / "executions.db")
         events += self._read_webhooks()
+        events += self._read_operator()
         # Stable chronological order; seq breaks ties within a source/agent.
         events.sort(key=lambda e: (e.ts, e.source, e.agent_id, e.seq))
         return events
