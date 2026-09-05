@@ -15,7 +15,9 @@ from recons_orchestrator.services import RecordingServiceManager
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(root=tmp_path / "recons", dashboard_dist=tmp_path / "dash")
+    from tests.auth import with_operator
+
+    return with_operator(Settings(root=tmp_path / "recons", dashboard_dist=tmp_path / "dash"))
 
 
 @pytest.fixture

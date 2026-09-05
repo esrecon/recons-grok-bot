@@ -52,9 +52,38 @@ TIERS: dict[str, TierConfig] = {
 }
 
 
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    try:
+        return int(raw) if raw not in (None, "") else default
+    except ValueError:
+        return default
+
+
+def _env_list(name: str) -> tuple[str, ...]:
+    raw = os.environ.get(name, "")
+    return tuple(x.strip() for x in raw.split(",") if x.strip())
+
+
 @dataclass
 class Settings:
-    """Filesystem + service layout the provisioner operates on."""
+    """Filesystem + service layout the provisioner operates on, plus the
+    operator-authentication settings the HTTP layer enforces.
+
+    Auth values come from the environment; in production the systemd unit loads
+    `shared/secrets.env` as its EnvironmentFile, so they live server-side only.
+    """
 
     root: Path = field(default_factory=lambda: Path(os.environ.get("RECONS_ROOT", "/opt/recons")))
     # Where the built dashboard SPA is served from (Phase 3+).
@@ -91,6 +120,42 @@ class Settings:
     @property
     def roster_path(self) -> Path:
         return self.root / "roster.json"
+
+    # --- operator authentication (see security.py) ----------------------------
+    # "password": operator user + hash from the environment (default).
+    # "proxy":    trust an identity header from a reverse-proxy/OIDC layer, but
+    #             only alongside a shared secret header and an allow-list.
+    auth_mode: str = field(default_factory=lambda: _env("RECONS_AUTH_MODE", "password").strip().lower())
+    operator_user: str = field(default_factory=lambda: _env("RECONS_OPERATOR_USER").strip())
+    operator_password_hash: str = field(
+        default_factory=lambda: _env("RECONS_OPERATOR_PASSWORD_HASH").strip()
+    )
+    session_secret: str = field(default_factory=lambda: _env("RECONS_SESSION_SECRET").strip())
+    session_ttl_seconds: int = field(default_factory=lambda: _env_int("RECONS_SESSION_TTL_SECONDS", 12 * 3600))
+    cookie_secure: bool = field(default_factory=lambda: _env_bool("RECONS_COOKIE_SECURE", True))
+    hsts: bool = field(default_factory=lambda: _env_bool("RECONS_HSTS", False))
+    # Proxy mode: the reverse proxy must inject this secret on every request
+    # (so identity headers can't be forged by anything else reaching loopback)
+    # and the identity must be one of these operators.
+    proxy_secret: str = field(default_factory=lambda: _env("RECONS_PROXY_SECRET").strip())
+    proxy_secret_header: str = field(
+        default_factory=lambda: _env("RECONS_PROXY_SECRET_HEADER", "X-Recons-Proxy-Secret").strip().lower()
+    )
+    proxy_identity_header: str = field(
+        default_factory=lambda: _env(
+            "RECONS_PROXY_IDENTITY_HEADER", "Cf-Access-Authenticated-User-Email"
+        ).strip().lower()
+    )
+    operator_emails: tuple[str, ...] = field(default_factory=lambda: _env_list("RECONS_OPERATOR_EMAILS"))
+    # Optional explicit Origin allow-list for state-changing requests. Empty
+    # means "must match the Host / X-Forwarded-Host of the request".
+    allowed_origins: tuple[str, ...] = field(default_factory=lambda: _env_list("RECONS_ALLOWED_ORIGINS"))
+    # Header carrying the real client address when behind a proxy (e.g.
+    # CF-Connecting-IP). Empty means use the socket peer address.
+    client_ip_header: str = field(default_factory=lambda: _env("RECONS_CLIENT_IP_HEADER").strip().lower())
+    login_rate_limit: int = field(default_factory=lambda: _env_int("RECONS_LOGIN_RATE_LIMIT", 10))
+    api_rate_limit: int = field(default_factory=lambda: _env_int("RECONS_API_RATE_LIMIT", 600))
+    rate_window_seconds: int = 60
 
     def home_dir(self, agent_id: str) -> Path:
         """HERMES_HOME for one agent."""

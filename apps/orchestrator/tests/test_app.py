@@ -4,20 +4,15 @@ root and systemd stubbed."""
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
-from recons_orchestrator.app import create_app, get_provisioner
-from recons_orchestrator.provisioning import Provisioner
-from recons_orchestrator.services import RecordingServiceManager
+from tests.auth import build_app, login, make_client
 
 
 @pytest.fixture
 def client(settings):
-    app = create_app()
-    app.dependency_overrides[get_provisioner] = lambda: Provisioner(
-        settings, services=RecordingServiceManager()
-    )
-    return TestClient(app)
+    c = make_client(build_app(settings))
+    login(c)
+    return c
 
 
 def test_health(client):
