@@ -11,6 +11,10 @@ When the roster changes, `rewire` regenerates:
     for callers, plus the `A2A_TOKEN_<PEER>` values it uses to call out).
 
 Secrets only ever land in `service.env` (chmod 600), never in `config.yaml`.
+
+The orchestrator itself is a caller too: it holds an `orchestrator->agent`
+token for every agent so the dashboard's chat proxy can talk A2A to the
+agent's loopback port, authenticated and audited like any other peer.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ from .config import Settings, TIERS
 from .models import AgentRecord
 
 TokenFactory = Callable[[], str]
+
+ORCHESTRATOR_ID = "orchestrator"
 
 
 def _default_token() -> str:
@@ -98,18 +104,22 @@ class Mesh:
         """
         tokens = self._load_tokens()
         ids = {r.id for r in records}
+        callers = ids | {ORCHESTRATOR_ID}
 
         # Prune stale edges (agents that were deleted).
         for edge in list(tokens):
             caller, target = edge.split("->", 1)
-            if caller not in ids or target not in ids:
+            if caller not in callers or target not in ids:
                 del tokens[edge]
 
-        # Ensure every directed edge in the full mesh has a token.
+        # Ensure every directed edge in the full mesh has a token, plus the
+        # orchestrator's own inbound edge to each agent (chat proxy).
         for caller in ids:
             for target in ids:
                 if caller != target:
                     self._edge_token(tokens, caller, target)
+        for target in ids:
+            self._edge_token(tokens, ORCHESTRATOR_ID, target)
 
         self._save_tokens(tokens)
 
@@ -143,10 +153,11 @@ class Mesh:
             f"A2A_HOST=127.0.0.1",
             f"A2A_PORT={record.a2a_port}",
         ]
-        # Inbound: which callers may reach me, and with what token.
-        peer_tokens = ",".join(
-            f"{p.id}:{tokens[self._edge(p.id, record.id)]}" for p in peers
-        )
+        # Inbound: which callers may reach me, and with what token. The
+        # orchestrator is always a permitted caller (dashboard chat).
+        inbound = [f"{p.id}:{tokens[self._edge(p.id, record.id)]}" for p in peers]
+        inbound.append(f"{ORCHESTRATOR_ID}:{tokens[self._edge(ORCHESTRATOR_ID, record.id)]}")
+        peer_tokens = ",".join(inbound)
         lines.append(f"A2A_PEER_TOKENS={peer_tokens}")
         # Outbound: the token I present when calling each peer.
         for p in peers:

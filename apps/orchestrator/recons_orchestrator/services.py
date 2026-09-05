@@ -17,6 +17,7 @@ class ServiceManager(Protocol):
     def restart(self, unit: str) -> None: ...
     def disable(self, unit: str) -> None: ...
     def daemon_reload(self) -> None: ...
+    def status(self, unit: str) -> str: ...  # active | inactive | failed | activating | unknown
 
 
 class SystemdUserServiceManager:
@@ -44,12 +45,25 @@ class SystemdUserServiceManager:
     def daemon_reload(self) -> None:
         self._systemctl("daemon-reload")
 
+    def status(self, unit: str) -> str:
+        """`systemctl --user is-active` prints one word and exits non-zero when
+        the unit isn't active, so this never uses check=True."""
+        try:
+            result = self._run(
+                ["systemctl", "--user", "is-active", unit], capture_output=True, text=True
+            )
+        except (OSError, subprocess.SubprocessError):
+            return "unknown"
+        out = (getattr(result, "stdout", "") or "").strip().splitlines()
+        return out[0].strip() if out else "unknown"
+
 
 class RecordingServiceManager:
     """Test double: records the sequence of operations instead of running them."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.statuses: dict[str, str] = {}
 
     def enable_now(self, unit: str) -> None:
         self.calls.append(("enable_now", unit))
@@ -65,3 +79,6 @@ class RecordingServiceManager:
 
     def daemon_reload(self) -> None:
         self.calls.append(("daemon_reload", ""))
+
+    def status(self, unit: str) -> str:
+        return self.statuses.get(unit, "active")

@@ -24,7 +24,7 @@ class AgentStatus(str, Enum):
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_RESERVED = frozenset({"shared", "roster", "all", "new", "api", "hermes"})
+_RESERVED = frozenset({"shared", "pending", "orchestrator", "roster", "all", "new", "api", "hermes"})
 
 
 def slugify(name: str) -> str:

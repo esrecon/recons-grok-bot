@@ -244,6 +244,25 @@ def read_cron_db(agent_id: str, db_path: Path) -> list[LedgerEvent]:
     return events
 
 
+@dataclass
+class SessionSummary:
+    """One conversation (a Hermes session) as the Sessions view lists it."""
+
+    agent_id: str
+    session_id: str
+    session_key: str | None
+    started_ts: float
+    last_ts: float
+    started_at: str
+    last_at: str
+    message_count: int
+    tool_calls: int
+    preview: str
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 # --- the ledger ---------------------------------------------------------------
 class Ledger:
     def __init__(self, settings: Settings) -> None:
@@ -362,6 +381,42 @@ class Ledger:
 
     def agents(self) -> list[str]:
         return [r.id for r in self._roster.load()]
+
+    # -- sessions (conversations) ----------------------------------------------
+    def sessions(self, *, agent: str | None = None) -> list[SessionSummary]:
+        groups: dict[tuple[str, str], list[LedgerEvent]] = {}
+        for e in self.collect():
+            if e.source != "session" or not e.session_id:
+                continue
+            if agent and e.agent_id != agent:
+                continue
+            groups.setdefault((e.agent_id, e.session_id), []).append(e)
+        out: list[SessionSummary] = []
+        for (agent_id, session_id), events in groups.items():
+            messages = [e for e in events if e.kind == "message"]
+            first_user = next((e for e in messages if (e.role or "").lower() == "user"), None)
+            preview_src = first_user or (messages[0] if messages else None)
+            preview = (preview_src.text if preview_src else "").strip().replace("\n", " ")[:140]
+            out.append(SessionSummary(
+                agent_id=agent_id,
+                session_id=session_id,
+                session_key=next((e.session_key for e in events if e.session_key), None),
+                started_ts=events[0].ts,
+                last_ts=events[-1].ts,
+                started_at=events[0].ts_iso,
+                last_at=events[-1].ts_iso,
+                message_count=len(messages),
+                tool_calls=sum(1 for e in events if e.kind == "tool_call"),
+                preview=preview,
+            ))
+        out.sort(key=lambda s: (-s.last_ts, s.agent_id, s.session_id))
+        return out
+
+    def session_events(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+        return [
+            e.to_json() for e in self.collect()
+            if e.source == "session" and e.agent_id == agent_id and e.session_id == session_id
+        ]
 
 
 def events_to_jsonl(events: Iterable[LedgerEvent]) -> str:

@@ -8,11 +8,15 @@ The built dashboard is served from the same origin (spa.py).
 
 from __future__ import annotations
 
+import json
+from typing import Literal
+
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from pydantic import BaseModel, Field, ValidationError
 
+from .chat import A2AChatClient
 from .config import Settings
 from .credentials import (
     PROVIDERS,
@@ -73,6 +77,15 @@ class RoutineInput(BaseModel):
     schedule: str
     instruction: str
     deliver: str | None = None
+
+
+class ChatInput(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+    session_id: str | None = Field(default=None, max_length=200)
+
+
+class DecisionInput(BaseModel):
+    decision: Literal["approve", "deny"]
 
 
 class LoginRequest(BaseModel):
@@ -406,13 +419,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/audit/export.jsonl")
     def audit_export(ledger: Ledger = Depends(get_ledger)) -> PlainTextResponse:
-        import json
-
         lines = "\n".join(json.dumps(e) for e in ledger.query(limit=1_000_000))
         return PlainTextResponse(
             lines,
             headers={"content-disposition": "attachment; filename=audit-export.jsonl"},
         )
+
+    # --- sessions (conversation history, from the ledger) ---------------------
+    @app.get("/api/sessions")
+    def sessions(agent: str | None = None, ledger: Ledger = Depends(get_ledger)) -> dict:
+        return {"sessions": [s.to_json() for s in ledger.sessions(agent=agent)]}
+
+    @app.get("/api/sessions/{agent_id}/{session_id}")
+    def session_detail(agent_id: str, session_id: str, ledger: Ledger = Depends(get_ledger)) -> dict:
+        summary = next(
+            (s for s in ledger.sessions(agent=agent_id) if s.session_id == session_id), None
+        )
+        if summary is None:
+            raise HTTPException(status_code=404, detail="no such session")
+        return {"session": summary.to_json(), "events": ledger.session_events(agent_id, session_id)}
+
+    # --- services (per-agent unit health for Settings) ------------------------
+    @app.get("/api/settings/services")
+    def settings_services(prov: Provisioner = Depends(get_provisioner)) -> dict:
+        rows = []
+        for rec in prov.list_agents():
+            state = prov.service_status(rec.id)
+            expected = "paused" if rec.status is AgentStatus.PAUSED else "running"
+            healthy = state == "active" if expected == "running" else state in ("inactive", "unknown")
+            rows.append({
+                "agent": rec.id, "name": rec.name, "unit": settings.unit_name(rec.id),
+                "status": state, "expected": expected, "healthy": healthy,
+            })
+        return {"services": rows}
+
+    # --- live chat (SSE) + approval decisions ----------------------------------
+    app.state.chat_client = A2AChatClient(settings)
+
+    @app.post("/api/agents/{agent_id}/messages")
+    async def chat_messages(
+        agent_id: str, body: ChatInput, prov: Provisioner = Depends(get_provisioner),
+        audit: OperatorAudit = Depends(get_operator_audit), who: str = Depends(actor),
+    ) -> StreamingResponse:
+        record = prov.get_agent(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        if record.status is AgentStatus.PAUSED:
+            raise HTTPException(status_code=409, detail="agent is paused — resume it to chat")
+        # The message text itself is recorded by the agent (state.db → ledger);
+        # the operator row only says that a turn was sent.
+        audit.record(actor=who, category="chat", action="message", target=agent_id,
+                     extra={"chars": len(body.text)})
+        client = app.state.chat_client
+
+        async def frames():
+            async for ev in client.stream(record, body.text, session_id=body.session_id):
+                yield f"data: {json.dumps(ev)}\n\n".encode("utf-8")
+
+        return StreamingResponse(
+            frames(), media_type="text/event-stream",
+            headers={"cache-control": "no-store", "x-accel-buffering": "no"},
+        )
+
+    @app.post("/api/agents/{agent_id}/approvals/{approval_id}")
+    async def decide_approval(
+        agent_id: str, approval_id: str, body: DecisionInput,
+        prov: Provisioner = Depends(get_provisioner),
+        audit: OperatorAudit = Depends(get_operator_audit), who: str = Depends(actor),
+    ) -> dict:
+        record = prov.get_agent(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no such agent")
+        target = f"{agent_id}/{approval_id[:120]}"
+        try:
+            await app.state.chat_client.decide(record, approval_id, body.decision)
+        except Exception as exc:
+            audit.record(actor=who, category="chat", action=f"approval_{body.decision}",
+                         target=target, result="error")
+            raise HTTPException(status_code=502, detail="could not deliver the decision to the agent") from exc
+        audit.record(actor=who, category="chat", action=f"approval_{body.decision}", target=target)
+        return {"status": "ok", "decision": body.decision}
 
     # --- signed-webhook receiver (Hermes lifecycle events) --------------------
     @app.post("/api/hooks")
@@ -428,6 +514,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "shared": [s.to_json() for s in lib.list_shared()],
             "pending": [s.to_json() for s in lib.list_pending()],
         }
+
+    def _skill_detail(lib: SkillLibrary, source: str, slug: str, agent: str | None = None) -> dict:
+        try:
+            return lib.inspect(source, slug, agent=agent).to_json()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    def _skill_file(lib: SkillLibrary, source: str, slug: str, path: str, agent: str | None = None) -> dict:
+        try:
+            return lib.read_file(source, slug, path, agent=agent)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/skills/shared/{slug}")
+    def shared_skill_detail(slug: str, lib: SkillLibrary = Depends(get_skills)) -> dict:
+        return _skill_detail(lib, "shared", slug)
+
+    @app.get("/api/skills/shared/{slug}/file")
+    def shared_skill_file(slug: str, path: str, lib: SkillLibrary = Depends(get_skills)) -> dict:
+        return _skill_file(lib, "shared", slug, path)
+
+    @app.get("/api/skills/pending/{agent_id}/{slug}")
+    def pending_skill_detail(agent_id: str, slug: str, lib: SkillLibrary = Depends(get_skills)) -> dict:
+        return _skill_detail(lib, "pending", slug, agent=agent_id)
+
+    @app.get("/api/skills/pending/{agent_id}/{slug}/file")
+    def pending_skill_file(
+        agent_id: str, slug: str, path: str, lib: SkillLibrary = Depends(get_skills)
+    ) -> dict:
+        return _skill_file(lib, "pending", slug, path, agent=agent_id)
 
     @app.post("/api/skills/{agent_id}/{slug}/approve")
     def approve_skill(
