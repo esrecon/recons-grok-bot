@@ -100,7 +100,7 @@ if [ -f "$SEC" ]; then
     check grep -q '^RECONS_OPERATOR_EMAILS=.\+' "$SEC" -- "proxy mode: operator allow-list set" \
       -- "RECONS_AUTH_MODE=proxy but RECONS_OPERATOR_EMAILS is empty (docs/65)"
   else
-    check grep -qE '^RECONS_OPERATOR_PASSWORD_HASH=\$scrypt\$' "$SEC" \
+    check grep -qE '^RECONS_OPERATOR_PASSWORD_HASH=[$]scrypt[$]' "$SEC" \
       -- "operator password hash set (dashboard login on)" \
       -- "RECONS_OPERATOR_PASSWORD_HASH is empty — dashboard locked until set (docs/10 §3b)"
   fi
