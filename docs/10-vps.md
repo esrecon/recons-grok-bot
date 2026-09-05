@@ -66,6 +66,22 @@ event Hermes sends against it. Provider keys are covered in
 [40-providers-and-tos.md](40-providers-and-tos.md); you can start with just Nous
 Portal and add the rest later.
 
+## 3b. Set the operator login
+
+The dashboard and its API are **locked until an operator credential exists**
+— there is no anonymous mode, even on the tailnet. Generate both values on the
+VPS (never type a plaintext password into the file):
+
+```bash
+cd /opt/recons/app/apps/orchestrator
+uv run python -m recons_orchestrator.security session-secret   # prints RECONS_SESSION_SECRET=…
+uv run python -m recons_orchestrator.security hash-password    # prompts twice, prints RECONS_OPERATOR_PASSWORD_HASH=…
+```
+
+Paste each printed line over its placeholder in `/opt/recons/shared/secrets.env`
+and set `RECONS_OPERATOR_USER` to the name you will sign in with. The password
+itself is never stored; rotating `RECONS_SESSION_SECRET` signs every browser out.
+
 ## 4. Providers
 
 Follow [40-providers-and-tos.md](40-providers-and-tos.md) now, at least far
@@ -102,7 +118,12 @@ systemctl --user status recons-orchestrator.service
 curl -s http://127.0.0.1:8330/api/health   # {"status":"ok"}
 ```
 
-It binds **loopback only**. Nothing is reachable yet — that's next.
+It binds **loopback only**. Nothing is reachable yet — that's next. Prove the
+login gate is on while you're here:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8330/api/agents   # 401
+```
 
 ## 7. Publish it to your tailnet
 
@@ -110,8 +131,9 @@ Go to **[15-tailscale.md](15-tailscale.md)**, then come back.
 
 ## 8. Create your first agents
 
-Open the dashboard, click **+**, and give the first agent a name and a one-line
-job. The first agent you create becomes the **lead**.
+Open the dashboard, sign in with the operator login from §3b, click **+**, and
+give the first agent a name and a one-line job. The first agent you create
+becomes the **lead**.
 
 Behind that one click, the orchestrator:
 
@@ -145,6 +167,9 @@ Docker, and A2A is loopback-bound with tokens.
 |---|---|
 | Agent won't start | `journalctl --user -u hermes-gateway@<id> -n 50` |
 | Dashboard 502 / blank | Is `recons-orchestrator` running? Is `RECONS_DASHBOARD_DIST` right? |
+| Dashboard says "operator login is not configured" | §3b — `RECONS_OPERATOR_USER` / `RECONS_OPERATOR_PASSWORD_HASH` missing from `secrets.env` |
+| Every save fails with "cross-site request blocked" | A proxy rewrote `Host`/`Origin`; set `RECONS_ALLOWED_ORIGINS` (docs/65) |
+| A key set in Settings has no effect | Agents read `secrets.env` at start — pause/resume the agent (or restart its unit) |
 | Agent dies after logout | `sudo loginctl enable-linger $USER` |
 | Config key rejected | You hit a `VERIFY` point — check the current Hermes docs |
 | Docker permission denied | `sudo usermod -aG docker $USER`, then re-login |

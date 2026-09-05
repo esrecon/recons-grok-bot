@@ -92,8 +92,36 @@ if [ -f "$SEC" ]; then
     -- "secrets.env is $MODE (must be 600)"
   check grep -q '^RECONS_WEBHOOK_SECRET=.\+' "$SEC" -- "webhook signing secret set" \
     -- "RECONS_WEBHOOK_SECRET is empty — the audit feed cannot be verified"
+  # Operator login: the API is locked without it, so a missing hash is a
+  # "you can't use the dashboard yet", not an exposure — but it must be set.
+  if grep -q '^RECONS_AUTH_MODE=proxy' "$SEC"; then
+    check grep -q '^RECONS_PROXY_SECRET=.\+' "$SEC" -- "proxy mode: shared proxy secret set" \
+      -- "RECONS_AUTH_MODE=proxy but RECONS_PROXY_SECRET is empty (docs/65)"
+    check grep -q '^RECONS_OPERATOR_EMAILS=.\+' "$SEC" -- "proxy mode: operator allow-list set" \
+      -- "RECONS_AUTH_MODE=proxy but RECONS_OPERATOR_EMAILS is empty (docs/65)"
+  else
+    check grep -qE '^RECONS_OPERATOR_PASSWORD_HASH=\$scrypt\$' "$SEC" \
+      -- "operator password hash set (dashboard login on)" \
+      -- "RECONS_OPERATOR_PASSWORD_HASH is empty — dashboard locked until set (docs/10 §3b)"
+  fi
+  check grep -q '^RECONS_SESSION_SECRET=.\+' "$SEC" -- "session signing secret set" \
+    -- "RECONS_SESSION_SECRET is empty — sessions will not survive an orchestrator restart"
 else
   fail "$SEC missing"
+fi
+
+section "Orchestrator login gate"
+if command -v curl >/dev/null && curl -fsS -o /dev/null http://127.0.0.1:8330/api/health 2>/dev/null; then
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8330/api/agents)
+  check test "$CODE" = "401" -- "API refuses requests without an operator session (401)" \
+    -- "API answered $CODE without a session — the login gate is not active"
+  if curl -sI http://127.0.0.1:8330/api/health | grep -qi '^content-security-policy'; then
+    pass "security headers present"
+  else
+    fail "no Content-Security-Policy header on the orchestrator"
+  fi
+else
+  info "orchestrator not running on 127.0.0.1:8330; skipping gate check"
 fi
 
 TOK="$RECONS_ROOT/shared/a2a-tokens.json"

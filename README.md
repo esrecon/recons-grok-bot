@@ -37,8 +37,8 @@ transcript of every exchange** — and reach your phone as an installable PWA ov
 
 | Path | What it is |
 |---|---|
-| `apps/dashboard/` | The Grok Bot-style web UI (React + Vite + Tailwind, installable PWA): agent roster, chat, Skills, Routines, **Audit**, Settings, one-click **New agent** |
-| `apps/orchestrator/` | FastAPI service: one-click agent provisioning (Hermes profiles), chat proxy (SSE), merged audit ledger + signed-webhook receiver, operator login |
+| `apps/dashboard/` | The Grok Bot-style web UI (React + Vite + Tailwind, installable PWA): operator sign-in, agent roster, chat, **Sessions**, Skills (with a read-only inspector), Routines, **Audit** (incl. operator actions), **Settings** (providers, write-only credentials, service health, security posture), one-click **New agent** |
+| `apps/orchestrator/` | FastAPI service: operator login + sessions + CSRF + rate limits + security headers, one-click agent provisioning (Hermes profiles), chat proxy (SSE ⇄ A2A), credentials store over `shared/secrets.env`, merged audit ledger + operator audit + signed-webhook receiver, serves the SPA |
 | `config/` | Profile templates (config.yaml, SOUL.md skeleton), A2A peer map, systemd units, shared skills/secrets layout |
 | `scripts/` | `vps-bootstrap.sh`, `vps-verify.sh`, backup/restore/update, `check-all.sh` (CI entrypoint) |
 | `tools/teach-mode/` | Workflow-demonstration → skill drafting helpers (`/learn` structure, `validate_skill.py`, guardrails) |
@@ -57,9 +57,13 @@ Read the docs in numeric order — they match the install order:
 6. [docs/40-providers-and-tos.md](docs/40-providers-and-tos.md) — Claude, ChatGPT, Nous, and the honest ToS position
 7. [docs/50-agents-a2a.md](docs/50-agents-a2a.md) — agent identity and how they talk
 8. [docs/60-security-hardening.md](docs/60-security-hardening.md) — the non-negotiable defaults, and why
-9. [docs/70-existing-hermes-and-buzz.md](docs/70-existing-hermes-and-buzz.md) — peer an existing Hermes; Buzz
-10. [docs/80-backup-update.md](docs/80-backup-update.md) — backups, restores, updates
-11. [docs/99-acceptance-checklist.md](docs/99-acceptance-checklist.md) — prove it all works, tick by tick
+9. [docs/65-public-endpoint-foundation.md](docs/65-public-endpoint-foundation.md) — what `shell.essexrecons.com` would need (design only; manual approval step)
+10. [docs/70-existing-hermes-and-buzz.md](docs/70-existing-hermes-and-buzz.md) — peer an existing Hermes; Buzz
+11. [docs/80-backup-update.md](docs/80-backup-update.md) — backups, restores, updates
+12. [docs/99-acceptance-checklist.md](docs/99-acceptance-checklist.md) — prove it all works, tick by tick
+
+The implementation plan for the control-centre work is in
+[docs/plans/dashboard-control-centre.md](docs/plans/dashboard-control-centre.md).
 
 Full deep-research findings (what Grok Bot is, why Hermes, the subscription ToS situation as of
 August 2026) live in [docs/00-research-report.md](docs/00-research-report.md).
@@ -73,7 +77,8 @@ sudo tailscale up && sudo tailscale serve --bg --https=443 http://127.0.0.1:8330
 ./scripts/vps-verify.sh              # prove nothing is exposed
 ```
 
-Then open `https://<your-magicdns-name>/` and click **+** to hire your first agent.
+Set the operator login (docs/10 §3b), then open `https://<your-magicdns-name>/`,
+sign in, and click **+** to hire your first agent.
 
 ## Development
 
@@ -87,9 +92,14 @@ Then open `https://<your-magicdns-name>/` and click **+** to hire your first age
 ## Security posture (summary — details in docs/60)
 
 Every service binds loopback and is published only via `tailscale serve`. Nothing is ever exposed
-to the public internet. Hermes is pinned ≥ v0.20.1 (2026 CVE history makes update cadence a
-security control). Agent approvals stay on; skills self-created by agents require explicit human
-approval; API keys live in one shared, `chmod 600` secrets file, server-side only.
+to the public internet. The dashboard and its API require an operator login (locked until one is
+configured), use a signed `HttpOnly`/`Secure`/`SameSite=Strict` session with CSRF protection, rate
+limits and strict security headers. Hermes is pinned ≥ v0.20.1 (2026 CVE history makes update
+cadence a security control). Agent approvals stay on; skills self-created by agents require explicit
+human approval and can be inspected first; API keys live in one shared, `chmod 600` secrets file,
+server-side only — the dashboard can set or replace them but never read them back. Everything the
+operator does is in the same audit ledger as what the agents do. A future public hostname is a
+separate, manual step (docs/65) that never bypasses any of this.
 
 ## License
 

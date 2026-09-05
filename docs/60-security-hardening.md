@@ -70,7 +70,12 @@ If you enable Telegram or similar: per-platform allowlists and DM pairing.
 
 ### 9. Secrets are 600 and server-side
 `shared/secrets.env`, `shared/a2a-tokens.json`, every `service.env`: mode 600.
-Provider keys never reach the browser — the orchestrator holds them.
+Provider keys never reach the browser — the orchestrator holds them. The
+dashboard's **Settings** tab can *set, replace or remove* a key (written by the
+orchestrator into `secrets.env`, mode preserved) and shows only
+configured / not configured + who changed it when. There is no "reveal";
+values never appear in API responses, audit rows, exports or error messages,
+and the test-suite asserts exactly that.
 
 ### 10. Backups are encrypted
 Transcripts contain your business data. `backup.sh` encrypts with `age` or `gpg`
@@ -83,6 +88,32 @@ The Chrome profile the agents drive should contain **only** the logins they need
 ### 12. A separate Claude load-bearer
 Don't drive the same Claude login from both Buzz and this stack simultaneously
 (see [40-providers-and-tos.md](40-providers-and-tos.md)).
+
+### 13. Operator login is on, and locked-by-default
+Every `/api` route except the health check, the HMAC-verified webhook receiver
+and the auth endpoints needs an operator session. With no
+`RECONS_OPERATOR_PASSWORD_HASH` the API is **locked**, not open. Set it up in
+[10-vps.md](10-vps.md) §3b; `vps-verify.sh` fails if it's missing.
+*Why: a tailnet decides which devices can connect; it says nothing about who is
+holding the phone.*
+
+### 14. Sessions, CSRF and headers
+Signed `HttpOnly` / `Secure` / `SameSite=Strict` cookie with a 12-hour TTL; a
+CSRF token on every state-changing request; cross-site requests refused; login
+and API rate-limited; `X-Frame-Options: DENY` and a `'self'`-only CSP on every
+response. Rotate `RECONS_SESSION_SECRET` to sign everyone out at once.
+
+### 15. Everything the operator does is in the same ledger
+Sign-ins (including failures), credential changes, skill approvals, routine
+edits, agent pause/resume/remove and approval decisions land in
+`audit/operator.jsonl` and show in the Audit tab under **Operator actions**.
+
+### 16. A public hostname is a separate decision
+The app is built so it *could* sit behind an OIDC proxy (Cloudflare Access) via
+an outbound-only tunnel to loopback — see
+[65-public-endpoint-foundation.md](65-public-endpoint-foundation.md). Nothing
+in this repo does that for you, and there is no configuration that exposes the
+dashboard without authentication.
 
 ## Prompt injection: assume it will happen
 
@@ -100,8 +131,9 @@ find out what it read just before it did.
 
 1. Pause the agent in the dashboard (or `systemctl --user stop hermes-gateway@<id>`).
 2. Read the Audit log around the event; export it (`/api/audit/export.jsonl`).
-3. Rotate what was exposed: provider keys in `secrets.env`, the affected A2A
-   tokens, the webhook secret.
+3. Rotate what was exposed: provider keys (Settings tab or `secrets.env`), the
+   affected A2A tokens, the webhook secret. Rotate `RECONS_SESSION_SECRET` to
+   sign every browser out; change the operator password with `hash-password`.
 4. If a skill was involved, remove it from `shared/skills/` and check the
    pending queue.
 5. Restore from backup if state is suspect (`restore.sh`, not in-place first).

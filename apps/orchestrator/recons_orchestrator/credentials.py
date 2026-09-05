@@ -113,6 +113,8 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         keys=(
             CredentialKey("RECONS_WEBHOOK_SECRET", "Webhook signing secret", required=True,
                           hint="openssl rand -hex 32; agents re-read it on restart"),
+            CredentialKey("RECONS_AUTH_MODE", "Sign-in mode", secret=False, writable=False,
+                          hint="password (default) or proxy — docs/65"),
             CredentialKey("RECONS_SESSION_SECRET", "Session signing secret", writable=False,
                           hint="Managed on the server (python -m recons_orchestrator.security session-secret)"),
             CredentialKey("RECONS_OPERATOR_USER", "Operator username", secret=False, writable=False,

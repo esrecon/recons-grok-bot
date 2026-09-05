@@ -252,6 +252,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         file (they may be set only in the unit's env) — reflect that."""
         s = settings
         by_setting = {
+            "RECONS_AUTH_MODE": bool(s.auth_mode),
             "RECONS_SESSION_SECRET": bool(s.session_secret),
             "RECONS_OPERATOR_USER": bool(s.operator_user),
             "RECONS_OPERATOR_PASSWORD_HASH": bool(s.operator_password_hash),
