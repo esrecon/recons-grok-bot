@@ -1,12 +1,13 @@
 import { test, expect } from "@playwright/test";
+import { login } from "./helpers";
 
-// Phone-shaped journeys: the single-pane messenger navigation and proof the
-// app is installable as an Android home-screen app (PWA).
+// Phone-shaped journeys: sign in, the single-pane messenger navigation, the
+// history and settings surfaces one-handed, and proof the app is installable
+// as an Android home-screen app (PWA).
 
 test.describe("phone", () => {
-
-  test("single-pane navigation: roster → chat → back", async ({ page }) => {
-    await page.goto("/");
+  test("single-pane navigation: sign in → roster → chat → back", async ({ page }) => {
+    await login(page);
     // Roster is the home screen; the conversation pane is not shown yet.
     const roster = page.getByLabel("Agents");
     await expect(roster).toBeVisible();
@@ -19,6 +20,22 @@ test.describe("phone", () => {
     await page.getByRole("button", { name: /Agents$/ }).click();
     await expect(page.getByLabel(/Message Scout/)).toBeHidden();
     await expect(roster.getByText("Recon")).toBeVisible();
+  });
+
+  test("sessions and settings are usable one-handed", async ({ page }) => {
+    await login(page);
+    await page.getByText("Sessions").click();
+    await page.getByText("Price these three suppliers.").first().click();
+    await expect(page.getByTestId("transcript").getByText("Priced. Cheapest is Acme.")).toBeVisible();
+    // Back to the list, then over to Settings.
+    await page.getByRole("button", { name: /Sessions$/ }).click();
+    await page.getByRole("button", { name: /Agents$/ }).click();
+    await page.getByText("Settings").click();
+    await expect(page.getByTestId("provider-nous").getByText("Connected")).toBeVisible();
+    // State-independent: another project may already have set a wrapper key
+    // on the shared mock, so assert the card, not a particular pill.
+    await expect(page.getByTestId("provider-claude_wrapper").getByText("Claude (wrapper)")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
   });
 
   test("is installable: manifest and service worker are served", async ({ page }) => {

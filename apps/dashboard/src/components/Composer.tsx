@@ -5,17 +5,19 @@ import { useState } from "react";
 export function Composer({
   botName,
   disabled,
+  locked,
   onSend,
 }: {
   botName: string;
-  disabled?: boolean;
+  disabled?: boolean; // sending in progress: keep typing, can't send yet
+  locked?: boolean; // agent paused: nothing can be sent
   onSend: (text: string) => void;
 }) {
   const [text, setText] = useState("");
 
   function submit() {
     const t = text.trim();
-    if (!t || disabled) return;
+    if (!t || disabled || locked) return;
     onSend(t);
     setText("");
   }
@@ -41,7 +43,8 @@ export function Composer({
               }
             }}
             rows={1}
-            placeholder={`Message ${botName}`}
+            disabled={locked}
+            placeholder={locked ? `${botName} is paused` : `Message ${botName}`}
             aria-label={`Message ${botName}`}
             className="max-h-32 flex-1 resize-none bg-transparent py-1 text-[15px] text-text-primary outline-none placeholder:text-text-secondary"
           />
@@ -49,7 +52,7 @@ export function Composer({
         <button
           type="button"
           onClick={submit}
-          disabled={disabled || !text.trim()}
+          disabled={disabled || locked || !text.trim()}
           aria-label="Send"
           className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-ink-contrast disabled:opacity-40"
         >

@@ -35,6 +35,7 @@ WRITABLE_KEYS = frozenset(
         "RECONS_WEBHOOK_SECRET",
         "RECONS_OPERATOR_USER",
         "RECONS_OPERATOR_PASSWORD_HASH",
+        "RECONS_SESSION_SECRET",
     }
 )
 

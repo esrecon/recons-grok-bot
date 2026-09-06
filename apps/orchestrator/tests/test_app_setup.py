@@ -4,7 +4,9 @@ from the dashboard, and driving subscription sign-in without a terminal."""
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: F401
+
+from tests.auth import authed_client
 
 from recons_orchestrator.app import create_app, get_provisioner, get_settings
 from recons_orchestrator.config import Settings
@@ -29,7 +31,7 @@ def client(tmp_path):
     from recons_orchestrator.app import get_providers
 
     app.dependency_overrides[get_providers] = lambda: app.state.providers
-    return TestClient(app)
+    return authed_client(app)
 
 
 def test_setup_starts_incomplete(client):

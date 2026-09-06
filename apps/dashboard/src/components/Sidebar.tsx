@@ -99,6 +99,7 @@ export function Sidebar({
       </nav>
 
       <footer className="border-t border-hairline p-2">
+        <SideNavItem label="Sessions" icon="≡" active={view === "sessions"} onClick={() => onNavigate("sessions")} />
         <SideNavItem label="Skills" icon="◇" active={view === "skills"} onClick={() => onNavigate("skills")} />
         <SideNavItem label="Routines" icon="◷" active={view === "routines"} onClick={() => onNavigate("routines")} />
         <SideNavItem label="Customize" icon="✎" active={view === "customize"} onClick={() => onNavigate("customize")} />

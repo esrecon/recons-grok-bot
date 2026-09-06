@@ -110,6 +110,10 @@ class Provisioner:
     def get_agent(self, agent_id: str) -> AgentRecord | None:
         return self._roster.get(agent_id)
 
+    def service_status(self, agent_id: str) -> str:
+        """Live systemd state of the agent's unit (via the ServiceManager seam)."""
+        return self._services.status(self._s.unit_name(agent_id))
+
     # -- lifecycle -------------------------------------------------------------
     def create_agent(self, spec: AgentSpec) -> AgentRecord:
         agent_id = slugify(spec.name)

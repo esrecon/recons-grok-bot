@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Agent, NewAgentInput, SetupStatus } from "./types";
+import type { Agent, NewAgentInput, SessionInfo, SetupStatus } from "./types";
 import type { View } from "./types-view";
-import { api } from "./api";
+import { api, onAuthChange } from "./api";
 import { applyTheme, loadTheme, type ThemeMode } from "./theme";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
@@ -10,10 +10,14 @@ import { AuditView } from "./views/AuditView";
 import { SkillsView } from "./views/SkillsView";
 import { RoutinesView } from "./views/RoutinesView";
 import { CustomizeView } from "./views/CustomizeView";
+import { SessionsView } from "./views/SessionsView";
 import { SettingsView } from "./views/SettingsView";
 import { SetupWizard } from "./views/SetupWizard";
+import { LoginView } from "./views/LoginView";
 
 export function App() {
+  // null = still asking the orchestrator whether we have a session.
+  const [session, setSession] = useState<SessionInfo | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("chats");
@@ -34,6 +38,37 @@ export function App() {
     applyTheme(t);
   }, []);
 
+  // Establish the operator session first; nothing else is fetched until then.
+  useEffect(() => {
+    let live = true;
+    api
+      .session()
+      .then((s) => live && setSession(s))
+      .catch((e) =>
+        live &&
+        setSession({
+          authenticated: false,
+          operator: null,
+          via: null,
+          csrf_token: null,
+          mode: "password",
+          configured: false,
+          reason: `Couldn't reach the orchestrator: ${e instanceof Error ? e.message : "unknown error"}`,
+        }),
+      );
+    const off = onAuthChange(() =>
+      setSession((cur) =>
+        cur ? { ...cur, authenticated: false, operator: null, csrf_token: null } : cur,
+      ),
+    );
+    return () => {
+      live = false;
+      off();
+    };
+  }, []);
+
+  const signedIn = session?.authenticated === true;
+
   const refresh = useCallback(async () => {
     try {
       const [list, setupStatus] = await Promise.all([api.listAgents(), api.setup()]);
@@ -47,8 +82,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (signedIn) void refresh();
+  }, [signedIn, refresh]);
 
   async function createAgent(input: NewAgentInput) {
     const created = await api.createAgent(input);
@@ -58,10 +93,38 @@ export function App() {
     setMobileDetail(true);
   }
 
+  async function signOut() {
+    try {
+      await api.logout();
+    } finally {
+      setAgents([]);
+      setSetup(null);
+      setSelectedId(null);
+      setView("chats");
+      setMobileDetail(false);
+      setWizardDismissed(false);
+      setSession((cur) =>
+        cur ? { ...cur, authenticated: false, operator: null, csrf_token: null } : cur,
+      );
+    }
+  }
+
   function toggleTheme() {
     const next: ThemeMode = theme === "dark" ? "light" : "dark";
     setTheme(next);
     applyTheme(next);
+  }
+
+  if (session === null) {
+    return (
+      <div className="grid h-full w-full place-items-center bg-bg">
+        <p className="text-sm text-text-secondary">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!signedIn) {
+    return <LoginView info={session} onSignedIn={setSession} />;
   }
 
   const selected = agents.find((a) => a.id === selectedId) ?? null;
@@ -154,12 +217,19 @@ export function App() {
             </div>
           ))}
 
+        {view === "sessions" && <SessionsView agents={agents} />}
         {view === "skills" && <SkillsView agents={agents} />}
         {view === "routines" && <RoutinesView agents={agents} />}
         {view === "customize" && <CustomizeView agents={agents} onChanged={refresh} />}
         {view === "audit" && <AuditView agents={agents} />}
         {view === "settings" && (
-          <SettingsView providers={setup?.providers ?? []} agents={agents} onChanged={refresh} />
+          <SettingsView
+            providers={setup?.providers ?? []}
+            agents={agents}
+            session={session}
+            onChanged={refresh}
+            onSignOut={signOut}
+          />
         )}
       </main>
 

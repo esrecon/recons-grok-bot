@@ -11,14 +11,14 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
-from recons_orchestrator.app import create_app, get_provisioner, get_settings
 from recons_orchestrator.chat import ChatBackend, chat_command
 from recons_orchestrator.config import Settings
 from recons_orchestrator.models import AgentRecord, ModelTier
 from recons_orchestrator.provisioning import Provisioner
 from recons_orchestrator.services import RecordingServiceManager
+
+from tests.auth import authed_client, build_app, make_client, with_operator
 
 
 def _record(tmp_path, agent_id="sophie") -> AgentRecord:
@@ -30,7 +30,7 @@ def _record(tmp_path, agent_id="sophie") -> AgentRecord:
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    return Settings(root=tmp_path / "recons", dashboard_dist=tmp_path / "d")
+    return with_operator(Settings(root=tmp_path / "recons", dashboard_dist=tmp_path / "d"))
 
 
 # --- command template ---------------------------------------------------------
@@ -114,12 +114,7 @@ def test_nonzero_exit_reports_stderr_and_override(settings, monkeypatch, tmp_pat
 # --- the endpoint -------------------------------------------------------------
 @pytest.fixture
 def client(settings):
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[get_provisioner] = lambda: Provisioner(
-        settings, services=RecordingServiceManager()
-    )
-    return TestClient(app)
+    return authed_client(build_app(settings))
 
 
 def _sse_events(body: str):
@@ -147,6 +142,41 @@ def test_endpoint_streams_sse(client, settings, monkeypatch):
 
 def test_endpoint_404_for_unknown_agent(client):
     assert client.post("/api/agents/nope/messages", json={"text": "hi"}).status_code == 404
+
+
+def test_endpoint_is_gated_like_everything_else(settings):
+    c = make_client(build_app(settings))
+    assert c.post("/api/agents/sophie/messages", json={"text": "hi"}).status_code == 401
+
+
+def test_endpoint_refuses_paused_agent_and_audits_turns(client, settings, monkeypatch):
+    from recons_orchestrator.models import AgentSpec
+
+    monkeypatch.setenv("RECONS_CHAT_CMD", "printf 'ok\\n' --ignore {text}")
+    prov = Provisioner(settings, services=RecordingServiceManager())
+    prov.create_agent(AgentSpec(name="Sophie", role="Email"))
+    assert client.post("/api/agents/sophie/messages", json={"text": "find suppliers"}).status_code == 200
+    rows = (settings.root / "audit" / "operator.jsonl").read_text()
+    assert '"category": "chat"' in rows
+    assert "find suppliers" not in rows  # the text is the agent's record, not ours
+    assert client.post("/api/agents/sophie/messages", json={"text": "x" * 20_001}).status_code == 422
+    client.post("/api/agents/sophie/pause")
+    assert client.post("/api/agents/sophie/messages", json={"text": "hi"}).status_code == 409
+
+
+def test_approval_decision_is_recorded(client, settings):
+    from recons_orchestrator.models import AgentSpec
+
+    Provisioner(settings, services=RecordingServiceManager()).create_agent(
+        AgentSpec(name="Sophie", role="Email")
+    )
+    r = client.post("/api/agents/sophie/approvals/appr-1", json={"decision": "approve"})
+    assert r.status_code == 200 and r.json()["status"] == "recorded"
+    assert client.post("/api/agents/sophie/approvals/appr-1", json={"decision": "maybe"}).status_code == 422
+    assert client.post("/api/agents/nope/approvals/appr-1", json={"decision": "deny"}).status_code == 404
+    rows = (settings.root / "audit" / "operator.jsonl").read_text()
+    assert '"action": "approval_approve"' in rows
+    assert '"target": "sophie/appr-1"' in rows
 
 
 def test_endpoint_rejects_empty_message(client, settings):

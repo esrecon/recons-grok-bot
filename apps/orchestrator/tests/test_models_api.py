@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: F401
+
+from tests.auth import authed_client
 
 from recons_orchestrator.app import (
     create_app,
@@ -39,7 +41,7 @@ def env(tmp_path, monkeypatch):
     app.state.providers = ProviderService(secrets, home=tmp_path / "hermes")
     app.dependency_overrides[get_providers] = lambda: app.state.providers
     return SimpleNamespace(
-        client=TestClient(app),
+        client=authed_client(app),
         settings=settings,
         secrets=secrets,
         services=services,

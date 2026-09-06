@@ -67,6 +67,12 @@ another device joins the tailnet later.
 Install Tailscale, sign in, and open `https://<magicdns-name>/`. That's it —
 same dashboard, no port forwarding, no VPN config, no exposed ports.
 
+You will be asked for the **operator login** ([10-vps.md](10-vps.md) §3b) even
+on the tailnet. That is deliberate: the tailnet decides which *devices* can
+reach the VPS, the login decides which *person* can drive the agents, and
+neither depends on the other. A future public hostname would add a third gate
+in front, never replace these ([65-public-endpoint-foundation.md](65-public-endpoint-foundation.md)).
+
 ## Install the app on your Android phone
 
 1. Install **Tailscale** from the Play Store and sign in.

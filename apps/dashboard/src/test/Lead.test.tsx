@@ -8,6 +8,21 @@ const setupFn = vi.fn();
 const makeLead = vi.fn();
 vi.mock("../api", () => ({
   api: {
+    session: () => Promise.resolve({
+      authenticated: true, operator: "tony", via: "password", csrf_token: "t",
+      mode: "password", configured: true, reason: null,
+    }),
+    logout: vi.fn().mockResolvedValue(undefined),
+    sessions: vi.fn().mockResolvedValue({ sessions: [] }),
+    credentialStatus: vi.fn().mockResolvedValue({ providers: [], integrations: {}, restart_required: false }),
+    securityPosture: vi.fn().mockResolvedValue({
+      mode: "password", configured: true, operator: "tony", via: "password", cookie_secure: true,
+      hsts: false, session_ttl_seconds: 43200, csrf_protection: true, allowed_origins: [],
+      rate_limits: { login_per_minute: 10, api_per_minute: 600 },
+    }),
+    services: vi.fn().mockResolvedValue({ services: [] }),
+    imageSettings: vi.fn().mockResolvedValue({ key_set: false, base_url: "", model: "" }),
+    getTelegram: vi.fn().mockResolvedValue({ enabled: false, allowed_users: "", token_set: false, imported: false }),
     listAgents: () => listAgents(),
     setup: () => setupFn(),
     makeLead: (id: string) => makeLead(id),
@@ -23,6 +38,7 @@ vi.mock("../api", () => ({
     importAgent: vi.fn(),
     routines: vi.fn().mockResolvedValue({ routines: [] }),
   },
+  onAuthChange: () => () => {},
 }));
 
 import { App } from "../App";

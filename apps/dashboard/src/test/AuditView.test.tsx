@@ -46,6 +46,27 @@ describe("AuditView", () => {
     );
   });
 
+  it("filters by source, including the operator log", async () => {
+    render(<AuditView agents={AGENTS} />);
+    await screen.findByText("Find suppliers");
+    fireEvent.change(screen.getByLabelText(/filter by source/i), { target: { value: "operator" } });
+    await waitFor(() =>
+      expect(auditFn).toHaveBeenLastCalledWith(expect.objectContaining({ source: "operator" })),
+    );
+  });
+
+  it("labels operator rows with the actor", async () => {
+    auditFn.mockResolvedValue({
+      events: [{ ts: 9, ts_iso: "2026-08-15T12:00:09Z", seq: 0, source: "operator", agent_id: "orchestrator",
+                 kind: "credential", role: "tony", text: "replaced NOUS_API_KEY", extra: { actor: "tony", result: "ok" } }],
+      count: 1,
+    });
+    render(<AuditView agents={AGENTS} />);
+    expect(await screen.findByText("replaced NOUS_API_KEY")).toBeInTheDocument();
+    expect(screen.getByText("operator")).toBeInTheDocument();
+    expect(screen.getByText("tony")).toBeInTheDocument();
+  });
+
   it("expands a row to show raw JSON", async () => {
     render(<AuditView agents={AGENTS} />);
     fireEvent.click(await screen.findByText("Find suppliers"));

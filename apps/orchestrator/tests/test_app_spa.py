@@ -9,10 +9,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from recons_orchestrator.app import create_app, get_provisioner, get_settings
+from recons_orchestrator.app import create_app
 from recons_orchestrator.config import Settings
-from recons_orchestrator.provisioning import Provisioner
-from recons_orchestrator.services import RecordingServiceManager
+
+from tests.auth import authed_client, build_app, with_operator
 
 
 @pytest.fixture
@@ -28,13 +28,8 @@ def dist(tmp_path):
 
 @pytest.fixture
 def client(tmp_path, dist):
-    settings = Settings(root=tmp_path / "recons", dashboard_dist=dist)
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[get_provisioner] = lambda: Provisioner(
-        settings, services=RecordingServiceManager()
-    )
-    return TestClient(app)
+    settings = with_operator(Settings(root=tmp_path / "recons", dashboard_dist=dist))
+    return authed_client(build_app(settings))
 
 
 def test_root_serves_the_dashboard(client):
@@ -81,8 +76,6 @@ def test_path_traversal_is_refused(client, tmp_path):
 
 def test_missing_build_explains_how_to_fix_it(tmp_path):
     settings = Settings(root=tmp_path / "recons", dashboard_dist=tmp_path / "nothing")
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
-    resp = TestClient(app).get("/")
+    resp = TestClient(create_app(settings)).get("/")
     assert resp.status_code == 503
     assert "npm run build" in resp.json()["detail"]

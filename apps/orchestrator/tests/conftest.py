@@ -3,19 +3,33 @@
 from __future__ import annotations
 
 import itertools
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from recons_orchestrator.config import Settings
+from tests.auth import TEST_HASH, TEST_USER
+
+# Tests that call create_app() without explicit settings get their Settings
+# from the environment; give that environment the same operator the login
+# helper uses so every client can sign in.
+os.environ.setdefault("RECONS_AUTH_MODE", "password")
+os.environ.setdefault("RECONS_OPERATOR_USER", TEST_USER)
+os.environ.setdefault("RECONS_OPERATOR_PASSWORD_HASH", TEST_HASH)
+os.environ.setdefault("RECONS_SESSION_SECRET", "unit-test-session-secret")
+os.environ.setdefault("RECONS_COOKIE_SECURE", "1")
+
+from recons_orchestrator.config import Settings  # noqa: E402
 from recons_orchestrator.provisioning import Provisioner
 from recons_orchestrator.services import RecordingServiceManager
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(root=tmp_path / "recons", dashboard_dist=tmp_path / "dash")
+    from tests.auth import with_operator
+
+    return with_operator(Settings(root=tmp_path / "recons", dashboard_dist=tmp_path / "dash"))
 
 
 @pytest.fixture

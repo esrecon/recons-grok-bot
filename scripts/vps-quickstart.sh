@@ -154,6 +154,26 @@ if [ -d "$REPO_DIR/skills" ]; then
   note "vendored skills installed into shared/skills"
 fi
 as_user "cd '$RECONS_ROOT/app/apps/orchestrator' && uv sync --frozen >/dev/null"
+
+# The dashboard and its API are locked until an operator login exists. Set it
+# now, while we are still in the terminal — the password is hashed on this
+# machine and never stored; RECONS_OPERATOR_PASSWORD makes this non-interactive.
+OPERATOR_USER="${RECONS_OPERATOR_USER:-$TARGET_USER}"
+[ "$OPERATOR_USER" != "root" ] || OPERATOR_USER="operator"
+if grep -qE '^RECONS_OPERATOR_PASSWORD_HASH=[$]scrypt[$]' "$RECONS_ROOT/shared/secrets.env" 2>/dev/null; then
+  note "operator login already set (change it: python -m recons_orchestrator.security set-operator)"
+else
+  printf '\n'
+  note "Choose the password you will sign into the dashboard with (user: $OPERATOR_USER)."
+  note "At least 12 characters. It is hashed here and never written down."
+  SET_OP="cd '$RECONS_ROOT/app/apps/orchestrator' && RECONS_ROOT='$RECONS_ROOT' uv run --frozen python -m recons_orchestrator.security set-operator --user '$OPERATOR_USER'"
+  if [ -n "${RECONS_OPERATOR_PASSWORD:-}" ]; then
+    printf '%s\n' "$RECONS_OPERATOR_PASSWORD" | as_user "$SET_OP --password-stdin" \
+      || die "Could not set the operator login."
+  else
+    as_user "$SET_OP" || die "Could not set the operator login (re-run with RECONS_OPERATOR_PASSWORD=… to script it)."
+  fi
+fi
 systemctl_do daemon-reload
 if ! systemctl_do enable --now recons-orchestrator.service; then
   scope_flag=""
@@ -190,7 +210,8 @@ else
   printf '    https://<your-machine>.<your-tailnet>.ts.net/\n'
   printf '    (find the name with: tailscale status)\n\n'
 fi
-cat <<'EOF'
+cat <<EOF
+Sign in with the operator login you just set (user: ${OPERATOR_USER}).
 The app takes it from here:
   • connect a model provider (paste a key, or sign in with ChatGPT)
   • create your first agent — a name and a one-line job

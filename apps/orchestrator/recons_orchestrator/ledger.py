@@ -5,6 +5,7 @@ Hermes stores agent activity in several places and never merges them:
   * per-agent `a2a_audit.jsonl` — every agent-to-agent exchange, appended
   * per-agent `cron/executions.db` — routine run history
   * live signed webhooks — lifecycle events POSTed to the orchestrator
+  * the orchestrator's own `audit/operator.jsonl` — what the human did
 
 This module reads all of them read-only, normalizes each into one `LedgerEvent`
 shape, and merges them into a single chronological, filterable timeline.
@@ -33,7 +34,7 @@ class LedgerEvent:
     ts: float  # normalized epoch seconds for sorting
     ts_iso: str
     seq: int
-    source: str  # session | a2a | cron | webhook
+    source: str  # session | a2a | cron | webhook | operator
     agent_id: str
     kind: str  # message | tool_call | tool_result | a2a | cron_run | lifecycle
     session_id: str | None = None
@@ -243,6 +244,25 @@ def read_cron_db(agent_id: str, db_path: Path) -> list[LedgerEvent]:
     return events
 
 
+@dataclass
+class SessionSummary:
+    """One conversation (a Hermes session) as the Sessions view lists it."""
+
+    agent_id: str
+    session_id: str
+    session_key: str | None
+    started_ts: float
+    last_ts: float
+    started_at: str
+    last_at: str
+    message_count: int
+    tool_calls: int
+    preview: str
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 # --- the ledger ---------------------------------------------------------------
 class Ledger:
     def __init__(self, settings: Settings) -> None:
@@ -278,6 +298,35 @@ class Ledger:
             ))
         return events
 
+    @property
+    def _operator_store(self) -> Path:
+        return self._s.root / "audit" / "operator.jsonl"
+
+    def _read_operator(self) -> list[LedgerEvent]:
+        path = self._operator_store
+        if not path.exists():
+            return []
+        events: list[LedgerEvent] = []
+        for i, line in enumerate(path.read_text("utf-8").splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts, ts_iso = _norm_ts(_first(rec, "ts"))
+            extra = {k: v for k, v in rec.items()
+                     if k not in {"ts", "ts_iso", "category", "action", "target"}}
+            events.append(LedgerEvent(
+                ts=ts, ts_iso=ts_iso, seq=i, source="operator", agent_id="orchestrator",
+                kind=str(rec.get("category") or "operator"),
+                role=str(rec.get("actor")) if rec.get("actor") else None,
+                text=f"{rec.get('action', '')} {rec.get('target', '')}".strip(),
+                extra=extra,
+            ))
+        return events
+
     def collect(self) -> list[LedgerEvent]:
         events: list[LedgerEvent] = []
         for rec in self._roster.load():
@@ -288,6 +337,7 @@ class Ledger:
             events += read_a2a_audit(rec.id, home / "a2a_audit.jsonl")
             events += read_cron_db(rec.id, home / "cron" / "executions.db")
         events += self._read_webhooks()
+        events += self._read_operator()
         # Stable chronological order; seq breaks ties within a source/agent.
         events.sort(key=lambda e: (e.ts, e.source, e.agent_id, e.seq))
         return events
@@ -333,6 +383,42 @@ class Ledger:
 
     def agents(self) -> list[str]:
         return [r.id for r in self._roster.load()]
+
+    # -- sessions (conversations) ----------------------------------------------
+    def sessions(self, *, agent: str | None = None) -> list[SessionSummary]:
+        groups: dict[tuple[str, str], list[LedgerEvent]] = {}
+        for e in self.collect():
+            if e.source != "session" or not e.session_id:
+                continue
+            if agent and e.agent_id != agent:
+                continue
+            groups.setdefault((e.agent_id, e.session_id), []).append(e)
+        out: list[SessionSummary] = []
+        for (agent_id, session_id), events in groups.items():
+            messages = [e for e in events if e.kind == "message"]
+            first_user = next((e for e in messages if (e.role or "").lower() == "user"), None)
+            preview_src = first_user or (messages[0] if messages else None)
+            preview = (preview_src.text if preview_src else "").strip().replace("\n", " ")[:140]
+            out.append(SessionSummary(
+                agent_id=agent_id,
+                session_id=session_id,
+                session_key=next((e.session_key for e in events if e.session_key), None),
+                started_ts=events[0].ts,
+                last_ts=events[-1].ts,
+                started_at=events[0].ts_iso,
+                last_at=events[-1].ts_iso,
+                message_count=len(messages),
+                tool_calls=sum(1 for e in events if e.kind == "tool_call"),
+                preview=preview,
+            ))
+        out.sort(key=lambda s: (-s.last_ts, s.agent_id, s.session_id))
+        return out
+
+    def session_events(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+        return [
+            e.to_json() for e in self.collect()
+            if e.source == "session" and e.agent_id == agent_id and e.session_id == session_id
+        ]
 
 
 def events_to_jsonl(events: Iterable[LedgerEvent]) -> str:

@@ -8,9 +8,12 @@ import { api } from "../api";
 export function ProviderCard({
   provider,
   onChanged,
+  note,
 }: {
   provider: Provider;
   onChanged: () => void;
+  // Provenance from the credential catalogue ("Key updated … by …"), never a value.
+  note?: string | null;
 }) {
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -95,6 +98,7 @@ export function ProviderCard({
             )}
           </div>
           <p className="mt-1 text-[13px] text-text-secondary">{provider.detail}</p>
+          {note && <p className="mt-0.5 text-[12px] text-text-secondary">{note}</p>}
         </div>
         {connected && provider.method !== "service" && (
           <button

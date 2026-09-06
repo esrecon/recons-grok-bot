@@ -1,13 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Agent, AuditEvent } from "../types";
 import { api } from "../api";
+import { formatTs } from "../lib/format";
 
 const SOURCE_LABEL: Record<string, string> = {
   session: "chat",
   a2a: "agent → agent",
   cron: "routine",
   webhook: "event",
+  operator: "operator",
 };
+
+// The source filter's choices (label → API value).
+const SOURCE_OPTIONS: [string, string][] = [
+  ["All sources", ""],
+  ["Chats", "session"],
+  ["Agent → agent", "a2a"],
+  ["Routine runs", "cron"],
+  ["Lifecycle events", "webhook"],
+  ["Operator actions", "operator"],
+];
 
 const KIND_ICON: Record<string, string> = {
   message: "💬",
@@ -16,6 +28,12 @@ const KIND_ICON: Record<string, string> = {
   a2a: "↔",
   cron_run: "◷",
   lifecycle: "•",
+  auth: "🔐",
+  credential: "🔑",
+  skill: "◇",
+  routine: "◷",
+  agent: "●",
+  chat: "💬",
 };
 
 // The merged audit log: every conversation turn, tool call, agent-to-agent
@@ -26,6 +44,7 @@ export function AuditView({ agents }: { agents: Agent[] }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [agent, setAgent] = useState<string>("");
+  const [source, setSource] = useState<string>("");
   const [a2aOnly, setA2aOnly] = useState(false);
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -39,7 +58,7 @@ export function AuditView({ agents }: { agents: Agent[] }) {
     let live = true;
     setLoading(true);
     api
-      .audit({ agent: agent || undefined, a2a_only: a2aOnly, q: q || undefined })
+      .audit({ agent: agent || undefined, source: source || undefined, a2a_only: a2aOnly, q: q || undefined })
       .then((r) => {
         if (live) {
           setEvents(r.events);
@@ -51,7 +70,7 @@ export function AuditView({ agents }: { agents: Agent[] }) {
     return () => {
       live = false;
     };
-  }, [agent, a2aOnly, q]);
+  }, [agent, source, a2aOnly, q]);
 
   return (
     <section className="flex h-full flex-1 flex-col bg-bg">
@@ -66,7 +85,7 @@ export function AuditView({ agents }: { agents: Agent[] }) {
           </a>
         </div>
         <p className="mt-0.5 text-[13px] text-text-secondary">
-          Every message, tool call and agent-to-agent hand-off, in order.
+          Every message, tool call and agent-to-agent hand-off, in order — plus what you did.
         </p>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -80,6 +99,18 @@ export function AuditView({ agents }: { agents: Agent[] }) {
             {agents.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            aria-label="Filter by source"
+            className="rounded-full bg-surface-2 px-3 py-1.5 text-sm text-text-primary outline-none"
+          >
+            {SOURCE_OPTIONS.map(([label, value]) => (
+              <option key={value} value={value}>
+                {label}
               </option>
             ))}
           </select>
@@ -131,7 +162,9 @@ export function AuditView({ agents }: { agents: Agent[] }) {
                       <span className="font-medium text-text-primary">
                         {e.source === "a2a" && e.peer_from
                           ? `${nameOf(e.peer_from)} → ${nameOf(e.peer_to ?? "")}`
-                          : nameOf(e.agent_id)}
+                          : e.source === "operator"
+                            ? "Operator"
+                            : nameOf(e.agent_id)}
                       </span>
                       <span className="rounded-full bg-surface-2 px-1.5 text-[11px]">
                         {SOURCE_LABEL[e.source] ?? e.source}
@@ -158,16 +191,4 @@ export function AuditView({ agents }: { agents: Agent[] }) {
       </div>
     </section>
   );
-}
-
-function formatTs(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }

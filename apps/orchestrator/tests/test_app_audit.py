@@ -7,12 +7,11 @@ import hmac
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
-from recons_orchestrator.app import create_app, get_settings
 from recons_orchestrator.config import Settings
 from recons_orchestrator.webhooks import WebhookReceiver
 
+from tests.auth import build_app, login, make_client, with_operator
 from tests.fixtures import seed_two_agents
 
 SECRET = "shared-webhook-secret"
@@ -22,11 +21,12 @@ SECRET = "shared-webhook-secret"
 def client(tmp_path):
     root = tmp_path / "recons"
     seed_two_agents(root)
-    settings = Settings(root=root, dashboard_dist=tmp_path / "d")
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
+    settings = with_operator(Settings(root=root, dashboard_dist=tmp_path / "d"))
+    app = build_app(settings)
     app.state.receiver = WebhookReceiver(settings, secret=SECRET)
-    return TestClient(app)
+    c = make_client(app)
+    login(c)
+    return c
 
 
 def test_audit_returns_merged_events(client):

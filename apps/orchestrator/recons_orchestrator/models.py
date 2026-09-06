@@ -30,8 +30,10 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 # future collective endpoints. "hermes" is deliberately NOT reserved: agents
 # live under agents/<id> (never ~/.hermes), and the default Hermes profile is
 # discovered under exactly that name — reserving it made the most common
-# import (your own ~/.hermes agent) impossible.
-_RESERVED = frozenset({"shared", "roster", "all", "new", "api"})
+# import (your own ~/.hermes agent) impossible. "pending" is the skill-source
+# label for agent drafts and "orchestrator" is the pseudo-agent operator
+# actions are attributed to in the ledger.
+_RESERVED = frozenset({"shared", "roster", "all", "new", "api", "pending", "orchestrator"})
 
 
 def slugify(name: str) -> str:

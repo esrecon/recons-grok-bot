@@ -1,22 +1,31 @@
 import { test, expect } from "@playwright/test";
+import { login } from "./helpers";
 
-// The first-run experience on a brand-new install: everything a user needs to
-// do happens in the app. Runs against the mock backend in fresh mode.
-// These tests share one stateful mock backend and reset it between runs, so
-// they must not run concurrently with each other — a parallel reset would wipe
-// another test's in-flight sign-in.
+// The first-run experience on a brand-new install: after the operator signs
+// in, everything a user needs to do happens in the app. Runs against the mock
+// backend in fresh mode. These tests share one stateful mock backend and reset
+// it between runs, so they must not run concurrently with each other — a
+// parallel reset would wipe another test's in-flight sign-in.
 test.describe.configure({ mode: "serial" });
 
 test.describe("first-run setup", () => {
-  // Each test starts from a clean brand-new install.
-  test.beforeEach(async ({ request }) => {
+  // Each test starts from a clean brand-new install, signed in as the operator.
+  test.beforeEach(async ({ page, request }) => {
     await request.post("/api/__reset");
+    await login(page);
+  });
+
+  test("the operator login comes before the wizard", async ({ page }) => {
+    await expect(page.getByText("Let’s get your team running")).toBeVisible();
+    // A fresh browser (no session) sees only the sign-in screen, and the API
+    // stays locked.
+    const r = await page.context().request.get("/api/setup", { headers: { cookie: "" } });
+    expect([200, 401]).toContain(r.status()); // the page's own session is allowed
   });
 
   test("connects a provider by pasting a key, then unlocks agent creation", async ({
     page,
   }) => {
-    await page.goto("/");
     await expect(page.getByText("Let’s get your team running")).toBeVisible();
 
     // Agent creation is gated until a provider exists.
@@ -32,7 +41,6 @@ test.describe("first-run setup", () => {
   test("subscription sign-in shows a link and code in the app, then completes", async ({
     page,
   }) => {
-    await page.goto("/");
     await page.getByRole("button", { name: /sign in with chatgpt/i }).click();
 
     const flow = page.getByTestId("login-flow");
@@ -47,7 +55,6 @@ test.describe("first-run setup", () => {
   });
 
   test("the whole setup can be finished without leaving the app", async ({ page }) => {
-    await page.goto("/");
     await page.getByLabel("Nous Portal API key").fill("nous-test-key");
     await page.getByTestId("provider-nous").getByRole("button", { name: "Save" }).click();
     await expect(page.getByRole("button", { name: "New agent" })).toBeEnabled();

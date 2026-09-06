@@ -45,8 +45,10 @@ twice, in the harder place.
 
 It installs the packages, sets the firewall to default-deny, joins your tailnet
 (you'll get a sign-in link), installs Hermes and the service units, builds the
-dashboard, starts the orchestrator, publishes it privately over HTTPS, and runs
-the security check. It finishes by printing your URL.
+dashboard, **asks you to choose the dashboard operator password** (hashed on the
+machine, never stored — set `RECONS_OPERATOR_PASSWORD` to script it), starts the
+orchestrator, publishes it privately over HTTPS, and runs the security check. It
+finishes by printing your URL.
 
 Open that URL on any device on your tailnet and the app walks you through the
 rest. **You should not need to come back to this terminal.**
@@ -109,6 +111,24 @@ the ledger, not an account credential, so you should never have to run
 
 Provider keys and logins are entered **in the app** (step 8), not here.
 
+## 3b. Set the operator login
+
+The dashboard and its API are **locked until an operator credential exists** —
+there is no anonymous mode, even on the tailnet. The quickstart does this for
+you; on the long way, run it once the orchestrator's venv exists (step 6):
+
+```bash
+cd /opt/recons/app/apps/orchestrator
+RECONS_ROOT=/opt/recons uv run --frozen python -m recons_orchestrator.security set-operator --user tony
+```
+
+It prompts twice, writes `RECONS_OPERATOR_USER` and a scrypt
+`RECONS_OPERATOR_PASSWORD_HASH` into `/opt/recons/shared/secrets.env`, and the
+orchestrator picks them up on its next (re)start. The password itself is never
+stored. The session-signing secret is generated on first boot; rotating
+`RECONS_SESSION_SECRET` in that file signs every browser out. Change the
+password any time by running the same command again and restarting.
+
 ## 4. Providers — in the app
 
 Skip ahead. Once the dashboard is up, its setup screen connects your providers:
@@ -141,7 +161,12 @@ systemctl --user status recons-orchestrator.service
 curl -s http://127.0.0.1:8330/api/health   # {"status":"ok"}
 ```
 
-It binds **loopback only**. Nothing is reachable yet — that's next.
+It binds **loopback only**. Nothing is reachable yet — that's next. Prove the
+login gate is on while you're here:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8330/api/agents   # 401
+```
 
 ## 7. Publish it to your tailnet
 
@@ -149,7 +174,8 @@ Go to **[15-tailscale.md](15-tailscale.md)**, then come back.
 
 ## 8. Connect providers and create your first agents
 
-Open the dashboard. On a fresh install it opens a two-step setup screen:
+Open the dashboard and sign in with the operator login from §3b. On a fresh
+install it then opens a two-step setup screen:
 
 1. **Connect a brain.** Paste a Nous API key, and/or click *Sign in with
    ChatGPT* — the verification link and code appear right there, and the card
@@ -194,6 +220,9 @@ Docker, and A2A is loopback-bound with tokens.
 |---|---|
 | Agent won't start | `journalctl --user -u hermes-gateway@<id> -n 50` |
 | Dashboard 502 / blank | Is `recons-orchestrator` running? Is `RECONS_DASHBOARD_DIST` right? |
+| Dashboard says "operator login is not configured" | §3b — run `set-operator`, then restart the orchestrator |
+| Every save fails with "cross-site request blocked" | A proxy rewrote `Host`/`Origin`; set `RECONS_ALLOWED_ORIGINS` (docs/65) |
+| A key set in Settings has no effect | Agents read `secrets.env` at start — pause/resume the agent (or restart its unit) |
 | Agent dies after logout | `sudo loginctl enable-linger $USER` |
 | Config key rejected | You hit a `VERIFY` point — check the current Hermes docs |
 | Docker permission denied | `sudo usermod -aG docker $USER`, then re-login |

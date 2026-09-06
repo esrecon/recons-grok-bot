@@ -3,6 +3,8 @@ import type {
   AuditEvent,
   AuditFilters,
   ChatEvent,
+  CredentialChange,
+  CredentialsResponse,
   DiscoveredAgent,
   ImageSettings,
   ImproveField,
@@ -11,68 +13,183 @@ import type {
   NewAgentInput,
   Provider,
   Routine,
+  SecurityPosture,
+  ServiceStatus,
+  SessionDetail,
+  SessionInfo,
+  SessionSummary,
   SetupStatus,
   Skill,
+  SkillDetail,
+  SkillFileContent,
   TelegramStatus,
 } from "./types";
 
 // Single-origin client for the orchestrator (proxied to the mock server in dev).
+//
+// Auth plumbing: the operator session is an HttpOnly cookie the browser sends
+// on its own (same-origin). What the client must do is (1) carry the session's
+// CSRF token on every state-changing request and (2) treat a 401 anywhere as
+// "signed out" so the shell can show the login screen instead of failing
+// quietly. No credential is ever kept in JavaScript beyond the CSRF token.
 const BASE = "/api";
 
-async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
-    throw new Error(detail || `HTTP ${res.status}`);
+type AuthState = "signed-out";
+const listeners = new Set<(s: AuthState) => void>();
+let csrf: string | null = null;
+
+export function onAuthChange(fn: (s: AuthState) => void): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
+export function resetAuthForTests(): void {
+  csrf = null;
+  listeners.clear();
+}
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
   }
+}
+
+async function readDetail(res: Response): Promise<string> {
+  const text = await res.text().catch(() => "");
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return parsed.detail;
+    if (parsed.detail) return JSON.stringify(parsed.detail);
+  } catch {
+    // not JSON
+  }
+  return text || res.statusText || `HTTP ${res.status}`;
+}
+
+function signedOut(): never {
+  csrf = null;
+  listeners.forEach((fn) => fn("signed-out"));
+  throw new ApiError(401, "Signed out — please sign in again.");
+}
+
+function buildInit(init: RequestInit & { json?: unknown } = {}): RequestInit {
+  const method = (init.method ?? "GET").toUpperCase();
+  const headers = new Headers(init.headers);
+  let body = init.body;
+  if (init.json !== undefined) {
+    headers.set("content-type", "application/json");
+    body = JSON.stringify(init.json);
+  }
+  if (method !== "GET" && method !== "HEAD" && csrf) headers.set("x-csrf-token", csrf);
+  const { json: _json, ...rest } = init;
+  void _json;
+  return { ...rest, method, headers, body, credentials: "same-origin" };
+}
+
+async function request<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, buildInit(init));
+  if (res.status === 401) signedOut();
+  if (!res.ok) throw new ApiError(res.status, await readDetail(res));
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
+function rememberSession(info: SessionInfo): SessionInfo {
+  csrf = info.authenticated ? info.csrf_token : null;
+  return info;
+}
+
+function enc(s: string): string {
+  return encodeURIComponent(s);
+}
+
 export const api = {
+  // --- operator session -----------------------------------------------------
+  async session(): Promise<SessionInfo> {
+    return rememberSession(await request<SessionInfo>("/auth/session"));
+  },
+
+  async login(username: string, password: string): Promise<SessionInfo> {
+    // A wrong password is a 401 too, but it must not read as "signed out".
+    const res = await fetch(`${BASE}/auth/login`, buildInit({ method: "POST", json: { username, password } }));
+    if (!res.ok) throw new ApiError(res.status, await readDetail(res));
+    return rememberSession((await res.json()) as SessionInfo);
+  },
+
+  async logout(): Promise<void> {
+    try {
+      await request<void>("/auth/logout", { method: "POST" });
+    } finally {
+      csrf = null;
+    }
+  },
+
+  // --- setup + providers (connect a brain) ----------------------------------
+  setup(): Promise<SetupStatus> {
+    return request("/setup");
+  },
+
+  providers(): Promise<{ providers: Provider[] }> {
+    return request("/providers");
+  },
+
+  saveProviderKey(id: string, key: string): Promise<Provider> {
+    return request(`/providers/${enc(id)}/key`, { method: "PUT", json: { key } });
+  },
+
+  clearProviderKey(id: string): Promise<Provider> {
+    return request(`/providers/${enc(id)}/key`, { method: "DELETE" });
+  },
+
+  startProviderLogin(id: string): Promise<LoginSession> {
+    return request(`/providers/${enc(id)}/login`, { method: "POST" });
+  },
+
+  pollProviderLogin(loginId: string): Promise<LoginSession> {
+    return request(`/providers/login/${enc(loginId)}`);
+  },
+
+  // --- agents ---------------------------------------------------------------
   listAgents(): Promise<Agent[]> {
-    return fetch(`${BASE}/agents`).then((r) => json<Agent[]>(r));
+    return request<Agent[]>("/agents");
   },
 
   createAgent(input: NewAgentInput): Promise<Agent> {
-    return fetch(`${BASE}/agents`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    }).then((r) => json<Agent>(r));
+    return request<Agent>("/agents", { method: "POST", json: input });
   },
 
   setStatus(id: string, action: "pause" | "resume"): Promise<Agent> {
-    return fetch(`${BASE}/agents/${id}/${action}`, { method: "POST" }).then((r) =>
-      json<Agent>(r),
-    );
+    return request<Agent>(`/agents/${enc(id)}/${action}`, { method: "POST" });
   },
 
   makeLead(id: string): Promise<Agent> {
-    return fetch(`${BASE}/agents/${id}/lead`, { method: "POST" }).then((r) =>
-      json<Agent>(r),
-    );
+    return request<Agent>(`/agents/${enc(id)}/lead`, { method: "POST" });
+  },
+
+  deleteAgent(id: string): Promise<void> {
+    return request<void>(`/agents/${enc(id)}`, { method: "DELETE" });
+  },
+
+  decideApproval(agent: string, approvalId: string, decision: "approve" | "deny"): Promise<void> {
+    return request<void>(`/agents/${enc(agent)}/approvals/${enc(approvalId)}`, {
+      method: "POST",
+      json: { decision },
+    });
   },
 
   getTelegram(id: string): Promise<TelegramStatus> {
-    return fetch(`${BASE}/agents/${id}/telegram`).then((r) =>
-      json<TelegramStatus>(r),
-    );
+    return request(`/agents/${enc(id)}/telegram`);
   },
 
   setTelegram(
     id: string,
     input: { enabled: boolean; allowed_users?: string; token?: string },
   ): Promise<Agent> {
-    return fetch(`${BASE}/agents/${id}/telegram`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    }).then((r) => json<Agent>(r));
-  },
-
-  deleteAgent(id: string): Promise<void> {
-    return fetch(`${BASE}/agents/${id}`, { method: "DELETE" }).then((r) => {
-      if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
-    });
+    return request(`/agents/${enc(id)}/telegram`, { method: "PUT", json: input });
   },
 
   updateAgent(
@@ -86,25 +203,15 @@ export const api = {
       model_name?: string;
     },
   ): Promise<Agent> {
-    return fetch(`${BASE}/agents/${id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch),
-    }).then((r) => json<Agent>(r));
+    return request(`/agents/${enc(id)}`, { method: "PATCH", json: patch });
   },
 
   getSoul(id: string): Promise<{ content: string; exists: boolean }> {
-    return fetch(`${BASE}/agents/${id}/soul`).then((r) =>
-      json<{ content: string; exists: boolean }>(r),
-    );
+    return request(`/agents/${enc(id)}/soul`);
   },
 
   putSoul(id: string, content: string): Promise<{ content: string }> {
-    return fetch(`${BASE}/agents/${id}/soul`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content }),
-    }).then((r) => json<{ content: string }>(r));
+    return request(`/agents/${enc(id)}/soul`, { method: "PUT", json: { content } });
   },
 
   improve(input: {
@@ -112,41 +219,27 @@ export const api = {
     text: string;
     agent_context: { name: string; role: string };
   }): Promise<{ text: string }> {
-    return fetch(`${BASE}/assist/improve`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    }).then((r) => json<{ text: string }>(r));
+    return request("/assist/improve", { method: "POST", json: input });
   },
 
   generateAvatar(id: string): Promise<Agent> {
-    return fetch(`${BASE}/agents/${id}/avatar`, { method: "POST" }).then((r) =>
-      json<Agent>(r),
-    );
+    return request(`/agents/${enc(id)}/avatar`, { method: "POST" });
   },
 
   avatarUrl(id: string, version: number): string {
-    return `${BASE}/agents/${id}/avatar?v=${version}`;
+    return `${BASE}/agents/${enc(id)}/avatar?v=${version}`;
   },
 
   imageSettings(): Promise<ImageSettings> {
-    return fetch(`${BASE}/settings/image`).then((r) => json<ImageSettings>(r));
+    return request("/settings/image");
   },
 
-  setImageSettings(input: {
-    key?: string;
-    base_url?: string;
-    model?: string;
-  }): Promise<ImageSettings> {
-    return fetch(`${BASE}/settings/image`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    }).then((r) => json<ImageSettings>(r));
+  setImageSettings(input: { key?: string; base_url?: string; model?: string }): Promise<ImageSettings> {
+    return request("/settings/image", { method: "PUT", json: input });
   },
 
   models(): Promise<{ options: ModelOption[] }> {
-    return fetch(`${BASE}/models`).then((r) => json<{ options: ModelOption[] }>(r));
+    return request("/models");
   },
 
   addCustomModel(input: {
@@ -155,105 +248,83 @@ export const api = {
     model: string;
     api_key: string;
   }): Promise<{ model: { id: string } }> {
-    return fetch(`${BASE}/models/custom`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    }).then((r) => json<{ model: { id: string } }>(r));
+    return request("/models/custom", { method: "POST", json: input });
   },
 
   deleteCustomModel(id: string): Promise<void> {
-    return fetch(`${BASE}/models/custom/${id}`, { method: "DELETE" }).then((r) => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    });
+    return request<void>(`/models/custom/${enc(id)}`, { method: "DELETE" }).then(() => undefined);
   },
 
+  importCandidates(): Promise<{ candidates: DiscoveredAgent[] }> {
+    return request("/import/candidates");
+  },
+
+  importAgent(input: { home: string; name?: string; role?: string }): Promise<Agent> {
+    return request("/import", { method: "POST", json: input });
+  },
+
+  // --- audit ----------------------------------------------------------------
   audit(filters: AuditFilters = {}): Promise<{ events: AuditEvent[]; count: number }> {
     const p = new URLSearchParams();
     if (filters.agent) p.set("agent", filters.agent);
     if (filters.source) p.set("source", filters.source);
+    if (filters.kind) p.set("kind", filters.kind);
     if (filters.a2a_only) p.set("a2a_only", "true");
     if (filters.q) p.set("q", filters.q);
     const qs = p.toString();
-    return fetch(`${BASE}/audit${qs ? `?${qs}` : ""}`).then((r) =>
-      json<{ events: AuditEvent[]; count: number }>(r),
-    );
+    return request(`/audit${qs ? `?${qs}` : ""}`);
   },
 
   auditExportUrl(): string {
     return `${BASE}/audit/export.jsonl`;
   },
 
-  importCandidates(): Promise<{ candidates: DiscoveredAgent[] }> {
-    return fetch(`${BASE}/import/candidates`).then((r) =>
-      json<{ candidates: DiscoveredAgent[] }>(r),
-    );
+  // --- sessions (history) ---------------------------------------------------
+  sessions(agent?: string): Promise<{ sessions: SessionSummary[] }> {
+    return request(`/sessions${agent ? `?agent=${enc(agent)}` : ""}`);
   },
 
-  importAgent(input: { home: string; name?: string; role?: string }): Promise<Agent> {
-    return fetch(`${BASE}/import`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    }).then((r) => json<Agent>(r));
+  sessionDetail(agent: string, sessionId: string): Promise<SessionDetail> {
+    return request(`/sessions/${enc(agent)}/${enc(sessionId)}`);
   },
 
-  setup(): Promise<SetupStatus> {
-    return fetch(`${BASE}/setup`).then((r) => json<SetupStatus>(r));
+  history(agentId: string): Promise<{ messages: { role: string; text: string; ts_iso: string }[] }> {
+    return request(`/agents/${enc(agentId)}/history`);
   },
 
-  providers(): Promise<{ providers: Provider[] }> {
-    return fetch(`${BASE}/providers`).then((r) => json<{ providers: Provider[] }>(r));
-  },
-
-  saveProviderKey(id: string, key: string): Promise<Provider> {
-    return fetch(`${BASE}/providers/${id}/key`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ key }),
-    }).then((r) => json<Provider>(r));
-  },
-
-  clearProviderKey(id: string): Promise<Provider> {
-    return fetch(`${BASE}/providers/${id}/key`, { method: "DELETE" }).then((r) =>
-      json<Provider>(r),
-    );
-  },
-
-  startProviderLogin(id: string): Promise<LoginSession> {
-    return fetch(`${BASE}/providers/${id}/login`, { method: "POST" }).then((r) =>
-      json<LoginSession>(r),
-    );
-  },
-
-  pollProviderLogin(loginId: string): Promise<LoginSession> {
-    return fetch(`${BASE}/providers/login/${loginId}`).then((r) =>
-      json<LoginSession>(r),
-    );
-  },
-
+  // --- skills ---------------------------------------------------------------
   skills(): Promise<{ shared: Skill[]; pending: Skill[] }> {
-    return fetch(`${BASE}/skills`).then((r) =>
-      json<{ shared: Skill[]; pending: Skill[] }>(r),
-    );
+    return request("/skills");
+  },
+
+  skillDetail(source: "shared" | "pending", slug: string, agent?: string | null): Promise<SkillDetail> {
+    const path =
+      source === "pending" ? `/skills/pending/${enc(agent ?? "")}/${enc(slug)}` : `/skills/shared/${enc(slug)}`;
+    return request(path);
+  },
+
+  skillFile(
+    source: "shared" | "pending",
+    slug: string,
+    filePath: string,
+    agent?: string | null,
+  ): Promise<SkillFileContent> {
+    const base =
+      source === "pending" ? `/skills/pending/${enc(agent ?? "")}/${enc(slug)}` : `/skills/shared/${enc(slug)}`;
+    return request(`${base}/file?path=${enc(filePath)}`);
   },
 
   approveSkill(agent: string, slug: string): Promise<Skill> {
-    return fetch(`${BASE}/skills/${agent}/${slug}/approve`, { method: "POST" }).then(
-      (r) => json<Skill>(r),
-    );
+    return request(`/skills/${enc(agent)}/${enc(slug)}/approve`, { method: "POST" });
   },
 
   rejectSkill(agent: string, slug: string): Promise<void> {
-    return fetch(`${BASE}/skills/${agent}/${slug}/reject`, { method: "POST" }).then(
-      (r) => {
-        if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
-      },
-    );
+    return request(`/skills/${enc(agent)}/${enc(slug)}/reject`, { method: "POST" });
   },
 
+  // --- routines -------------------------------------------------------------
   routines(): Promise<{ routines: Routine[] }> {
-    return fetch(`${BASE}/routines`).then((r) => json<{ routines: Routine[] }>(r));
+    return request("/routines");
   },
 
   createRoutine(input: {
@@ -262,46 +333,60 @@ export const api = {
     instruction: string;
     deliver?: string;
   }): Promise<Routine> {
-    return fetch(`${BASE}/routines`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    }).then((r) => json<Routine>(r));
+    return request("/routines", { method: "POST", json: input });
   },
 
   toggleRoutine(agent: string, id: string, action: "enable" | "pause"): Promise<Routine> {
-    return fetch(`${BASE}/routines/${agent}/${id}/${action}`, { method: "POST" }).then(
-      (r) => json<Routine>(r),
-    );
+    return request(`/routines/${enc(agent)}/${enc(id)}/${action}`, { method: "POST" });
   },
 
   deleteRoutine(agent: string, id: string): Promise<void> {
-    return fetch(`${BASE}/routines/${agent}/${id}`, { method: "DELETE" }).then((r) => {
-      if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
-    });
+    return request(`/routines/${enc(agent)}/${enc(id)}`, { method: "DELETE" });
   },
 
-  history(agentId: string): Promise<{ messages: { role: string; text: string; ts_iso: string }[] }> {
-    return fetch(`${BASE}/agents/${agentId}/history`).then((r) =>
-      json<{ messages: { role: string; text: string; ts_iso: string }[] }>(r),
-    );
+  // --- settings: credentials catalogue, posture, services -------------------
+  credentialStatus(): Promise<CredentialsResponse> {
+    return request("/settings/credentials");
   },
 
+  // Write-only by design: the value goes up, only a status comes back.
+  setCredential(key: string, value: string): Promise<CredentialChange> {
+    return request(`/settings/credentials/${enc(key)}`, { method: "PUT", json: { value } });
+  },
+
+  removeCredential(key: string): Promise<CredentialChange> {
+    return request(`/settings/credentials/${enc(key)}`, { method: "DELETE" });
+  },
+
+  securityPosture(): Promise<SecurityPosture> {
+    return request("/settings/security");
+  },
+
+  services(): Promise<{ services: ServiceStatus[] }> {
+    return request("/settings/services");
+  },
+
+  // --- live chat --------------------------------------------------------------
   // Streams a chat turn as Server-Sent Events. Yields parsed ChatEvents until
-  // the stream closes. Uses fetch streaming (not EventSource) so we can POST.
+  // the stream closes. Uses fetch streaming (not EventSource) so we can POST
+  // with the CSRF token.
   async *streamChat(
     agentId: string,
     text: string,
     signal?: AbortSignal,
   ): AsyncGenerator<ChatEvent> {
-    const res = await fetch(`${BASE}/agents/${agentId}/messages`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "text/event-stream" },
-      body: JSON.stringify({ text }),
-      signal,
-    });
+    const res = await fetch(
+      `${BASE}/agents/${enc(agentId)}/messages`,
+      buildInit({
+        method: "POST",
+        headers: { accept: "text/event-stream" },
+        json: { text },
+        signal,
+      }),
+    );
+    if (res.status === 401) signedOut();
     if (!res.ok || !res.body) {
-      throw new Error(`chat failed: HTTP ${res.status}`);
+      throw new ApiError(res.status, await readDetail(res));
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();

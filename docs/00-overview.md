@@ -17,10 +17,11 @@ provisioning, the merged audit ledger, and the deployment kit.
 ┌────────────────────── Tailscale tailnet (nothing public) ──────────────────────┐
 │ VPS (Ubuntu 24.04)                                Real-world PC (Windows 11)   │
 │ ── ORCHESTRATOR (FastAPI, loopback :8330)         ── Hermes instance "Deck"    │
-│    · serves the dashboard SPA + PWA                  (A2A peer: terminal/files │
-│    · one-click agent provisioning (profiles)          on the real PC)          │
-│    · proxies chat to each profile's API (SSE)     ── Chrome remote-debugging   │
-│    · audit ledger API + signed-webhook receiver       → CDP logged-in browsing │
+│    · operator login, sessions, CSRF, headers         (A2A peer: terminal/files │
+│    · serves the dashboard SPA + PWA                   on the real PC)          │
+│    · one-click agent provisioning (profiles)      ── Chrome remote-debugging   │
+│    · chat proxy (SSE ⇄ A2A), Settings/credentials     → CDP logged-in browsing │
+│    · audit ledger API + signed-webhook receiver                                │
 │ ── Hermes profiles (one per agent, systemd        Android phone                │
 │    template unit hermes-gateway@<name>)           ── PWA (installed icon) over │
 │    shared: /opt/recons/shared/{skills,secrets}       tailnet TLS               │
@@ -77,9 +78,10 @@ The docs are numbered in install order:
 5. **[40-providers-and-tos.md](40-providers-and-tos.md)** — Claude, ChatGPT and Nous, and the honest ToS position
 6. **[50-agents-a2a.md](50-agents-a2a.md)** — how agents are wired and how they talk
 7. **[60-security-hardening.md](60-security-hardening.md)** — the defaults, and why
-8. **[70-existing-hermes-and-buzz.md](70-existing-hermes-and-buzz.md)** — peer your existing Hermes; Buzz
-9. **[80-backup-update.md](80-backup-update.md)** — backups, restores, updates
-10. **[99-acceptance-checklist.md](99-acceptance-checklist.md)** — prove it all works
+8. **[65-public-endpoint-foundation.md](65-public-endpoint-foundation.md)** — what a future public hostname would need (design only; manual approval)
+9. **[70-existing-hermes-and-buzz.md](70-existing-hermes-and-buzz.md)** — peer your existing Hermes; Buzz
+10. **[80-backup-update.md](80-backup-update.md)** — backups, restores, updates
+11. **[99-acceptance-checklist.md](99-acceptance-checklist.md)** — prove it all works
 
 Background research (what Grok Bot is, why Hermes, the subscription ToS timeline)
 is in **[00-research-report.md](00-research-report.md)**.
